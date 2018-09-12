@@ -6,8 +6,7 @@
 #####################################################################
 from labscript_devices import runviewer_parser, labscript_device, BLACS_tab, BLACS_worker
 
-from labscript import IntermediateDevice, config, LabscriptError, StaticAnalogQuantity, AnalogOut, DigitalOut
-#from labscript_utils.unitconversions import NovaTechDDS9mFreqConversion, NovaTechDDS9mAmpConversion
+from labscript import IntermediateDevice, config, LabscriptError, StaticAnalogQuantity, AnalogOut, DigitalOut, set_passed_properties
 
 import numpy as np
 import labscript_utils.h5_lock, h5py
@@ -28,8 +27,10 @@ class AgilentE4422B(IntermediateDevice):
     allowed_children = [StaticAnalogQuantity]
     generation = 2
 
-
-    def __init__(self,name,parent_device,connection,com_port=0,FMSignal=None,RFOnOff=None,freq_limits = None,freq_conv_class = None,freq_conv_params = {},amp_limits=None,amp_conv_class = None,amp_conv_params = {},phase_limits=None,phase_conv_class = None,phase_conv_params = {}):
+    @set_passed_properties(property_names = {
+        "connection_table_properties": ["com_port"]}
+        )
+    def __init__(self,name,parent_device,com_port='COM1',FMSignal=None,RFOnOff=None,freq_limits = None,freq_conv_class = None,freq_conv_params = {},amp_limits=None,amp_conv_class = None,amp_conv_params = {},phase_limits=None,phase_conv_class = None,phase_conv_params = {}):
         #self.clock_type = parent_device.clock_type # Don't see that this is needed anymore
 
         IntermediateDevice.__init__(self,name,parent_device)
@@ -225,11 +226,11 @@ class AgilentE4422BTab(DeviceTab):
         # and auto place the widgets in the UI
         self.auto_place_widgets(("RF Output",dds_widgets))
 
-        # # Store the COM port to be used   !!!
-        # self.com_port = str(self.settings['connection_table'].find_by_name(self.device_name).BLACS_connection)
-        #
+        # Store the COM port to be used
+        self.com_port = str(self.settings['connection_table'].find_by_name(self.device_name).BLACS_connection)
+
         # Create and set the primary worker
-        self.create_worker("main_worker", AgilentE4422BWorker)
+        self.create_worker("main_worker", AgilentE4422BWorker, {'com_port':self.com_port})
         self.primary_worker = "main_worker"
 
         # Set the capabilities of this device
@@ -244,8 +245,7 @@ class AgilentE4422BWorker(Worker):
         global h5py; import labscript_utils.h5_lock, h5py
         global serial; import serial
 
-        #TODO: don't hard-code the com port / GPIB address
-        self.COMPort = 'COM11'
+        self.COMPort = self.com_port
         self.GPIBAddress = 19
         self.baudrate = 19200
 
