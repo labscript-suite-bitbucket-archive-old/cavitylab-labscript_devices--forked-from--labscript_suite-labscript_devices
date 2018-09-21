@@ -882,7 +882,7 @@ class NiPCIe6363CounterAcquisitionWorker(Worker):
         global logging; import logging
         global time; import time
 
-        self.PFIdict = {'NIMultiDAQCard0/PFI13': 'NIMultiDAQCard0/ctr1'}
+        self.PFIdict = {'NIMultiDAQCard1/PFI13': 'NIMultiDAQCard1/ctr1'}
 
         self.counter_task_running = False
         self.counter_abort = False
@@ -1002,7 +1002,7 @@ class NiPCIe6363CounterAcquisitionWorker(Worker):
                     samps_per_chan = [numpy.uint64(int(numpy.ceil((self.end_times[i][j]-self.start_times[i][j])*sample_freq[j])))  for j in range(len(self.start_times[i]))]
                     self.pulser[i] = CPTTask('/'+CPT_out_chnl_list[i],'/'+trig_chnl_list[i], sample_freq[0], samps_per_chan[0], 0)
                     # Create Counter task
-                    self.counter_task[i] = Task() #CounterCallbackTask("/NIMultiDAQCard0/ctr0","/NIMultiDAQCard0/PFI13", sample_freq, samps_per_chan)  #Task() ##EE3
+                    self.counter_task[i] = Task() #CounterCallbackTask("/NIMultiDAQCard1/ctr0","/NIMultiDAQCard1/PFI13", sample_freq, samps_per_chan)  #Task() ##EE3
                     self.logger.info(type(self.counter_task[i]))
                 except Exception as e:
                     self.logger.error(str(e))
@@ -1014,7 +1014,7 @@ class NiPCIe6363CounterAcquisitionWorker(Worker):
                 self.counter_task[i].CreateCICountEdgesChan(counter_chnl_list[i], '', DAQmx_Val_Rising, 0, DAQmx_Val_CountUp) # EE callbacktask ##EE3
                 #Sets CPT for buffered (sample clock) edge counting: CfgSampClkTiming (const char source[], float64 rate, int32 activeEdge, int32 sampleMode, uInt64 sampsPerChanToAcquire);
                 # TODO check sample_freq[0] here...if we want to change the binning, we will have to use the smallest bin and then rebin the larger acquisitions
-                self.counter_task[i].CfgSampClkTiming('/'+CPT_chnl_list[i], sample_freq[0], DAQmx_Val_Rising, DAQmx_Val_FiniteSamps, numpy.uint64(sum(samps_per_chan))) #"/NIMultiDAQCard0/PFI13" # EE callbacktask ##EE3
+                self.counter_task[i].CfgSampClkTiming('/'+CPT_chnl_list[i], sample_freq[0], DAQmx_Val_Rising, DAQmx_Val_FiniteSamps, numpy.uint64(sum(samps_per_chan))) #"/NIMultiDAQCard1/PFI13" # EE callbacktask ##EE3
 
                 #Starts the CPT and counting tasks
                 self.pulser[i].StartTask()
@@ -1102,6 +1102,7 @@ class NiPCIe6363CounterAcquisitionWorker(Worker):
         self.counter_buffered_channels = h5_count_chnls ## set?
         self.CPT_buffered_channels = h5_CPT_chnls ## use set here?! Multiple counters could use same CPT counter. ##EE2
         self.trig_buffered_channels = h5_trig_chnls ## use set here?! Multiple counters could use same CPT counter. ##EE2
+        print(self.PFIdict)
         self.CPT_out_buffered_channels = [self.PFIdict[x] for x in h5_CPT_chnls]
         self.counter_buffered = True
         # Initialize counter and CPT lists
@@ -1173,7 +1174,7 @@ class NiPCIe6363CounterAcquisitionWorker(Worker):
                 counter_measurements = hdf5_file.create_group('/data/counter')
             ind = 0
             prev_counter = None
-            counter_channels = [a.replace("NIMultiDAQCard0/",'') for a in self.counter_buffered_channels]
+            counter_channels = [a.replace("NIMultiDAQCard1/",'') for a in self.counter_buffered_channels]
             self.logger.info(self.counter_buffered_channels)
             self.logger.info(counter_channels)
             for counter_connection,CPT,trigger,counter_label,counter_start_time,counter_end_time,sample_freq,counter_wait_label in counter_acquisitions:
