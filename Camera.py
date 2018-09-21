@@ -273,7 +273,7 @@ class CameraWorker(Worker):
             raise Exception('invalid response from server: ' + response)
 
     def transition_to_buffered(self, device_name, h5file, initial_values, fresh):
-        h5file = shared_drive.path_to_agnostic(h5file)
+#         h5file = shared_drive.path_to_agnostic(h5file)
         if not self.use_zmq:
             return self.transition_to_buffered_sockets(h5file,self.host, self.port)
         response = zprocess.zmq_get_raw(self.port, self.host, data=h5file.encode('utf-8'))
