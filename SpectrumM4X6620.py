@@ -68,10 +68,18 @@ class channel_data():
 @labscript_device
 class SpectrumM4X6620(IntermediateDevice):
 
-    def __init__(self,name,parent_device):
+    def __init__(self,name,parent_device,trigger=None,triggerDur=10e-6):
         IntermediateDevice.__init__(self,name,parent_device)
         self.BLACS_connection = 5
         self.set_mode('Off') ## Initialize data structure
+
+        self.triggerDur = triggerDur
+
+        if trigger:
+            if 'device' in trigger and 'connection' in trigger:
+                self.triggerDO = DigitalOut(self.name+'_Trigger', trigger['device'], trigger['connection'])
+            else:
+                raise LabscriptError('You must specify the "device" and "connection" for the trigger input to the SpectrumM4X6620')
 
     ## Sets up the channel_data structure that will be filled with the following function calls (single_freq,comb,sweep...).
     def set_mode(self,mode_name, clock_freq=500, channels = ['','','',''], powers = [0,0,0,0]):
@@ -91,6 +99,9 @@ class SpectrumM4X6620(IntermediateDevice):
 
     # Function that allows user to initialize a segment.
     def sweep_comb(self, t, duration, start_freqs, end_freqs, amplitudes, phases, ch, ramp_type,loops=1):
+        self.triggerDO.go_high(t)
+        self.triggerDO.go_low(t+self.triggerDur)
+
         seg = segment(t,duration,loops)
         for i in range(len(start_freqs)):
             if (amplitudes[i] < 0) or (amplitudes[i] > 1):
@@ -268,7 +279,7 @@ class SpectrumM4X6620Worker(Worker):
     ## To handle exceptions, the function returns False if a buffer was not generated, so as not to send this
     ## information to the card. Otherwise, the function returns True.
     def generate_buffer(self):
-
+        print("Generating buffer")
         # Iterate over the channels which are on. Set channel-specific
         for channel in self.channels:
 
@@ -334,30 +345,36 @@ class SpectrumM4X6620Worker(Worker):
                 if (self.samples % 32) != 0: raise LabscriptError("Number of samples must be a multiple of 32") # Not *strictly* necessary: see p.105 of Spectrum manual
                 size = uint64(self.num_segments * self.samples * self.bytesPerSample)
                 self.buffer = create_string_buffer(size.value)
-                waveform = cast(self.buffer, ptr16)
+                waveform = cast(self.buffer, c_void_p)     # Void pointer so we can do pointer arithmentic below to fill the buffer faster using memmove()
+                print("Filling waveform...")
                 for j in range(self.num_segments):
                     seg = ch.segments[j]
-                    samp = self.samples
-                    t = np.linspace(0, seg.duration, samp)
+                    segSamples = int(seg.duration * self.clock_freq)
+                    t = np.linspace(0, seg.duration, segSamples)
                     for pulse in seg.pulses:
                         if pulse.ramp_type == "linear":
                             ramp = pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=seg.duration, f1=pulse.end, method='linear', phi=pulse.phase)
-                            for i in range(samp):
-                                waveform[j*samp + i] = np.int16(ramp[i])
+                            ramp = ramp.astype(int16)
                         elif pulse.ramp_type == "quadratic":
                             ramp = pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=seg.duration, f1=pulse.end, method='quadratic', phi=pulse.phase)
-                            for i in range(samp):
-                                waveform[j*samp + i] = np.int16(ramp[i])
+                            ramp = ramp.astype(int16)
                         else: ## If no allowed ramp is specified, then it is assumed that the frequency remains stationary.
-                            for i in range(samp):
-                                waveform[j*samp + i] = np.int16(pulse.amp * (2**15-1) * math.sin(2 * np.pi * pulse.start * i / self.clock_freq))
+                            ramp = pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=seg.duration, f1=pulse.start, method='linear', phi=pulse.phase)
+                            ramp = ramp.astype(int16)
 
+                        # Copy the data over into the buffer
+                        pointerOffset = j*self.samples*sizeof(int16)
+                        memmove(waveform.value+pointerOffset, ramp.ctypes.get_data(), segSamples*sizeof(int16))
+
+                print("Waveform filled")
+                waveform = cast(waveform, ptr16)
 #                 with open('X:\\dataDump.csv', 'w') as f:
 #                     for i in range(0, self.samples * self.num_segments):
 #                         print >> f, waveform[i]
                 ## Card settings specific to multimode
                 spcm_dwSetParam_i32(self.card, SPC_MEMSIZE, self.samples * self.num_segments)     # !!! Must extend to account for other channels?
                 spcm_dwSetParam_i32(self.card, SPC_SEGMENTSIZE, self.samples)
+                spcm_dwSetParam_i32(self.card, SPC_LOOPS, 1)
 
             #### SEQUENCE MODE ####
             elif (self.mode == 'sequence'):
@@ -374,22 +391,25 @@ class SpectrumM4X6620Worker(Worker):
                 if (self.samples % 32) != 0: raise LabscriptError("Number of samples must be a multiple of 32") # Not *strictly* necessary: see p.105 of Spectrum manual
                 size = uint64(self.samples * self.bytesPerSample)
                 self.buffer = create_string_buffer(size.value)
-                waveform = cast(self.buffer, ptr16)
+                waveform = cast(self.buffer, c_void_p)     # Void pointer so we can do pointer arithmentic below to fill the buffer faster using memmove()
+                print("Filling waveform...")
                 t = np.linspace(0,seg.duration,self.samples)
                 for pulse in seg.pulses:
                     if pulse.ramp_type == "linear":
                         ramp = pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=seg.duration, f1=pulse.end, method='linear', phi=pulse.phase)
-                        for i in range(self.samples):
-                            waveform[i] = np.int16(ramp[i])
+                        ramp = ramp.astype(int16)
                     elif pulse.ramp_type == "quadratic":
                         ramp = pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=seg.duration, f1=pulse.end, method='quadratic', phi=pulse.phase)
-                        for i in range(self.samples):
-                            waveform[i] = np.int16(ramp[i])
+                        ramp = ramp.astype(int16)
                     else:
-                        for i in range(0,self.samples,1):
-                            waveform[i] = np.int16(pulse.amp * (2**15-1) * math.sin(2 * np.pi * pulse.start * i / self.clock_freq + pulse.phase))
+                        ramp = pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=seg.duration, f1=pulse.start, method='linear', phi=pulse.phase)
+                        ramp = ramp.astype(int16)
 
+                    # Copy the data over into the buffer
+                    memmove(waveform.value, ramp.ctypes.get_data(), self.samples*sizeof(int16))
 
+                print("Waveform filled")
+                waveform = cast(waveform, ptr16)
                 #### RESET AMPLITUDE BASED ON NUMBER OF PULSES ####
                 # new_amplitude = amplitude / 3
                 # err=spcm_dwSetParam_i32(self.card, SPC_AMP2, int32(new_amplitude))
@@ -410,10 +430,12 @@ class SpectrumM4X6620Worker(Worker):
         # dwError = spcm_dwSetParam_i32(self.card, SPC_M2CMD, M2CMD_CARD_WAITREADY)
 
     def transfer_buffer(self):
+        print("Transferring data to card...")
         if self.mode == 'Off': return
         dw = spcm_dwDefTransfer_i64 (self.card, SPCM_BUF_DATA, SPCM_DIR_PCTOCARD, int32 (0), self.buffer, uint64 (0), uint64(self.samples * self.num_segments * self.bytesPerSample))
         dwError = spcm_dwSetParam_i32 (self.card, SPC_M2CMD, M2CMD_DATA_STARTDMA | M2CMD_DATA_WAITDMA)
         if((dw + dwError) != 0): raise LabscriptError("Error detected during data transfer to card. Error: " + str(dw) + " " + str(dwError))
+        print("Transfer complete")
     class channel():
         def __init__(self, name, power, port):
             self.segments = []
