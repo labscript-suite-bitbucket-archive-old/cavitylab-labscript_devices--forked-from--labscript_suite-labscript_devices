@@ -220,6 +220,7 @@ class SpectrumM4X6620Worker(Worker):
             raise LabscriptError("Device is not connected.")
 
         self.power = 0
+        self.bytesPerSample = 2
 
         # self.samples = 1000
         # self.buffer = create_string_buffer(self.samples)
@@ -284,7 +285,6 @@ class SpectrumM4X6620Worker(Worker):
             if amplitude < 80: raise LabscriptError("Power below acceptable range. Min power = -23.9 dBm")
             if amplitude > 2500: raise LabscriptError("Power above acceptable range. Max power = 5.9 dBm.")
             if channel.port == 0:
-                print("En0")
                 err=spcm_dwSetParam_i32(self.card, SPC_AMP0, int32(amplitude))
                 if err: raise LabscriptError("Error detected in settings: " + str(err) + "Amplitude: " + str(self.amplitude))
                 err = spcm_dwSetParam_i32(self.card, SPC_CHENABLE, CHANNEL0)
@@ -292,7 +292,6 @@ class SpectrumM4X6620Worker(Worker):
                 err = spcm_dwSetParam_i32(self.card, SPC_ENABLEOUT0, 1)
                 if err: raise LabscriptError("Error detected in settings: " + str(err))
             if channel.port == 1:
-                print("En1")
                 err=spcm_dwSetParam_i32(self.card, SPC_AMP1, int32(amplitude))
                 if err: raise LabscriptError("Error detected in settings: " + str(err) + "Amplitude: " + str(self.amplitude))
                 err = spcm_dwSetParam_i32(self.card, SPC_CHENABLE, CHANNEL1)
@@ -300,7 +299,6 @@ class SpectrumM4X6620Worker(Worker):
                 err = spcm_dwSetParam_i32(self.card, SPC_ENABLEOUT1, 1)
                 if err: raise LabscriptError("Error detected in settings: " + str(err))
             if channel.port == 2:
-                print("En2")
                 err=spcm_dwSetParam_i32(self.card, SPC_AMP2, int32(amplitude))
                 if err: raise LabscriptError("Error detected in settings: " + str(err) + "Amplitude: " + str(self.amplitude))
                 err = spcm_dwSetParam_i32(self.card, SPC_CHENABLE, CHANNEL2)
@@ -308,7 +306,6 @@ class SpectrumM4X6620Worker(Worker):
                 err = spcm_dwSetParam_i32(self.card, SPC_ENABLEOUT2, 1)
                 if err: raise LabscriptError("Error detected in settings: " + str(err))
             if channel.port == 3:
-                print("En3")
                 err=spcm_dwSetParam_i32(self.card, SPC_AMP3, int32(amplitude))
                 if err: raise LabscriptError("Error detected in settings: " + str(err) + "Amplitude: " + str(self.amplitude))
                 err = spcm_dwSetParam_i32(self.card, SPC_CHENABLE, CHANNEL3)
@@ -318,14 +315,12 @@ class SpectrumM4X6620Worker(Worker):
 
             #### MULTI MODE #### Each segment must be same size.
             elif (self.mode == 'multi'):
-                print("0")
-
-                lSetChannels = int32 (0)
-                spcm_dwGetParam_i32 (self.card, SPC_CHCOUNT,     byref (lSetChannels))
-                print(lSetChannels.value)
-                lBytesPerSample = int32 (0)
-                spcm_dwGetParam_i32 (self.card, SPC_MIINST_BYTESPERSAMPLE,  byref (lBytesPerSample))
-                print(lBytesPerSample.value)
+#                 lSetChannels = int32 (0)
+#                 spcm_dwGetParam_i32 (self.card, SPC_CHCOUNT,     byref (lSetChannels))
+#                 print(lSetChannels.value)
+#                 lBytesPerSample = int32 (0)
+#                 spcm_dwGetParam_i32 (self.card, SPC_MIINST_BYTESPERSAMPLE,  byref (lBytesPerSample))
+#                 print(lBytesPerSample.value)
 
                 ch = self.channels[0]
                 if not ch.segments: return False
@@ -333,58 +328,35 @@ class SpectrumM4X6620Worker(Worker):
                 self.num_segments = len(ch.segments)
                 max_samples = 0 ### For multimode, we must know the largest size segment, in order to make each segment the same size.
                 for seg in ch.segments:
-                    print(seg.time)
-                    print(seg.duration)
-                    print(seg.loops)
-                    print(self.clock_freq)
                     num = seg.duration * self.clock_freq
                     if num > max_samples: max_samples = num
-                print("1")
                 self.samples = int(max_samples)
-                size = uint64(self.num_segments * self.samples * 2)
+                if (self.samples % 32) != 0: raise LabscriptError("Number of samples must be a multiple of 32") # Not *strictly* necessary: see p.105 of Spectrum manual
+                size = uint64(self.num_segments * self.samples * self.bytesPerSample)
                 self.buffer = create_string_buffer(size.value)
                 waveform = cast(self.buffer, ptr16)
-                print("2")
-                print(self.num_segments)
                 for j in range(self.num_segments):
-                    print("3")
-                    print("segment " + str(j))
                     seg = ch.segments[j]
                     samp = self.samples
-                    print(samp)
                     t = np.linspace(0, seg.duration, samp)
-                    print(len(seg.pulses))
                     for pulse in seg.pulses:
-                        print("pulse " + str(pulse))
-                        print(pulse.start)
-                        print(pulse.amp)
-                        print(pulse.ramp_type)
                         if pulse.ramp_type == "linear":
-                            print("linear")
                             ramp = pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=seg.duration, f1=pulse.end, method='linear', phi=pulse.phase)
                             for i in range(samp):
-                                waveform[j*samp + i] = np.float16(ramp[i])
+                                waveform[j*samp + i] = np.int16(ramp[i])
                         elif pulse.ramp_type == "quadratic":
-                            print("quadratic")
                             ramp = pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=seg.duration, f1=pulse.end, method='quadratic', phi=pulse.phase)
                             for i in range(samp):
-                                waveform[j*samp + i] = np.float16(ramp[i])
+                                waveform[j*samp + i] = np.int16(ramp[i])
                         else: ## If no allowed ramp is specified, then it is assumed that the frequency remains stationary.
-                            print("other")
                             for i in range(samp):
-                                waveform[j*samp + i] = np.float16(pulse.amp * (2**15-1) * math.sin(2 * np.pi * pulse.start * i / self.clock_freq))
-                print("4")
-                print(size.value)
-                print(j*samp + i)
-#                 with open('X:\\your_file.csv', 'w') as f:
-# #                     for item in waveform:
-# #                         print >> f, item
-#                     for i in range(0,1500000+10):
+                                waveform[j*samp + i] = np.int16(pulse.amp * (2**15-1) * math.sin(2 * np.pi * pulse.start * i / self.clock_freq))
+
+#                 with open('X:\\dataDump.csv', 'w') as f:
+#                     for i in range(0, self.samples * self.num_segments):
 #                         print >> f, waveform[i]
                 ## Card settings specific to multimode
-                print(self.samples)
-                print(self.num_segments)
-                spcm_dwSetParam_i32(self.card, SPC_MEMSIZE, self.samples * self.num_segments * 2)     # !!! Must extend to account for other channels?
+                spcm_dwSetParam_i32(self.card, SPC_MEMSIZE, self.samples * self.num_segments)     # !!! Must extend to account for other channels?
                 spcm_dwSetParam_i32(self.card, SPC_SEGMENTSIZE, self.samples)
 
             #### SEQUENCE MODE ####
@@ -396,9 +368,11 @@ class SpectrumM4X6620Worker(Worker):
                 ch = self.channels[0]
                 if not ch.segments: return False
                 seg = ch.segments[0]
+                self.num_segments = 1
                 self.loops = seg.loops
                 self.samples = int(seg.duration*self.clock_freq)
-                size = uint64(self.samples * 2)
+                if (self.samples % 32) != 0: raise LabscriptError("Number of samples must be a multiple of 32") # Not *strictly* necessary: see p.105 of Spectrum manual
+                size = uint64(self.samples * self.bytesPerSample)
                 self.buffer = create_string_buffer(size.value)
                 waveform = cast(self.buffer, ptr16)
                 t = np.linspace(0,seg.duration,self.samples)
@@ -426,7 +400,6 @@ class SpectrumM4X6620Worker(Worker):
                 err = spcm_dwSetParam_i32(self.card, SPC_LOOPS, uint32(self.loops))
                 if err:
                     raise LabscriptError("Error detected in settings: " + str(err))
-        print("5")
         return True
 
     def set_trigger(self):
@@ -438,11 +411,9 @@ class SpectrumM4X6620Worker(Worker):
 
     def transfer_buffer(self):
         if self.mode == 'Off': return
-        print("6")
-        dw = spcm_dwDefTransfer_i64 (self.card, SPCM_BUF_DATA, SPCM_DIR_PCTOCARD, int32 (0), self.buffer, uint64 (0), uint64(self.samples * 2))
+        dw = spcm_dwDefTransfer_i64 (self.card, SPCM_BUF_DATA, SPCM_DIR_PCTOCARD, int32 (0), self.buffer, uint64 (0), uint64(self.samples * self.num_segments * self.bytesPerSample))
         dwError = spcm_dwSetParam_i32 (self.card, SPC_M2CMD, M2CMD_DATA_STARTDMA | M2CMD_DATA_WAITDMA)
         if((dw + dwError) != 0): raise LabscriptError("Error detected during data transfer to card. Error: " + str(dw) + " " + str(dwError))
-        print("7")
     class channel():
         def __init__(self, name, power, port):
             self.segments = []
