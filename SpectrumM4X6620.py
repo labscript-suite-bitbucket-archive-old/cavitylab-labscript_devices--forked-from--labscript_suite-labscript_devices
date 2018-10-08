@@ -333,9 +333,9 @@ class SpectrumM4X6620Tab(DeviceTab):
 class SpectrumM4X6620Worker(Worker):
     def init(self):
         self.final_values = {'channel 0' : {}}
-        self.remote = False
+        self.remote = True
         if self.remote:
-            self.card = spcm_hOpen("TCPIP::171.64.58.206::INSTR")  ### remote card mode only for testing purposes
+            self.card = spcm_hOpen("TCPIP::171.64.57.188::INSTR")  ### remote card mode only for testing purposes
         else:
             self.card = spcm_hOpen(create_string_buffer (b'/dev/spcm0'))
         if self.card == None:
@@ -403,28 +403,28 @@ class SpectrumM4X6620Worker(Worker):
             if amplitude > 2500: raise LabscriptError("Power above acceptable range. Max power = 5.9 dBm.")
             if channel.port == 0:
                 err=spcm_dwSetParam_i32(self.card, SPC_AMP0, int32(amplitude))
-                if err: raise LabscriptError("Error detected in settings: " + str(err) + "Amplitude: " + str(self.amplitude))
+                if err: raise LabscriptError("Error detected in settings: " + str(err) + "Amplitude: " + str(amplitude))
                 err = spcm_dwSetParam_i32(self.card, SPC_CHENABLE, CHANNEL0)
                 if err: raise LabscriptError("Error detected in settings: " + str(err))
                 err = spcm_dwSetParam_i32(self.card, SPC_ENABLEOUT0, 1)
                 if err: raise LabscriptError("Error detected in settings: " + str(err))
             if channel.port == 1:
                 err=spcm_dwSetParam_i32(self.card, SPC_AMP1, int32(amplitude))
-                if err: raise LabscriptError("Error detected in settings: " + str(err) + "Amplitude: " + str(self.amplitude))
+                if err: raise LabscriptError("Error detected in settings: " + str(err) + "Amplitude: " + str(amplitude))
                 err = spcm_dwSetParam_i32(self.card, SPC_CHENABLE, CHANNEL1)
                 if err: raise LabscriptError("Error detected in settings: " + str(err))
                 err = spcm_dwSetParam_i32(self.card, SPC_ENABLEOUT1, 1)
                 if err: raise LabscriptError("Error detected in settings: " + str(err))
             if channel.port == 2:
                 err=spcm_dwSetParam_i32(self.card, SPC_AMP2, int32(amplitude))
-                if err: raise LabscriptError("Error detected in settings: " + str(err) + "Amplitude: " + str(self.amplitude))
+                if err: raise LabscriptError("Error detected in settings: " + str(err) + "Amplitude: " + str(amplitude))
                 err = spcm_dwSetParam_i32(self.card, SPC_CHENABLE, CHANNEL2)
                 if err: raise LabscriptError("Error detected in settings: " + str(err))
                 err = spcm_dwSetParam_i32(self.card, SPC_ENABLEOUT2, 1)
                 if err: raise LabscriptError("Error detected in settings: " + str(err))
             if channel.port == 3:
                 err=spcm_dwSetParam_i32(self.card, SPC_AMP3, int32(amplitude))
-                if err: raise LabscriptError("Error detected in settings: " + str(err) + "Amplitude: " + str(self.amplitude))
+                if err: raise LabscriptError("Error detected in settings: " + str(err) + "Amplitude: " + str(amplitude))
                 err = spcm_dwSetParam_i32(self.card, SPC_CHENABLE, CHANNEL3)
                 if err: raise LabscriptError("Error detected in settings: " + str(err))
                 err = spcm_dwSetParam_i32(self.card, SPC_ENABLEOUT3, 1)
