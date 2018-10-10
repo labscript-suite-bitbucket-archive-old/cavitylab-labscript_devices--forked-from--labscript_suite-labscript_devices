@@ -24,6 +24,10 @@ from scipy.signal import chirp
 import labscript_utils.h5_lock, h5py
 from ctypes import *
 import struct
+import matplotlib.pyplot as plt
+from matplotlib.collections import PatchCollection
+from matplotlib.patches import Rectangle
+import gc
 
 ##### All the data for the sequence is wrapped up in these class structures. #####
 class pulse():
@@ -227,7 +231,7 @@ class SpectrumM4X6620(IntermediateDevice):
                 raise LabscriptError("Trigger duration too long (i.e. longer than the sample group duration; might not be a problem depending on how the card interprets trigger edges)")
 
             if group.time - t_prev < max_dur:
-                raise LabscriptError("Maximum group length is larger than the separation between groups! This is an edge case that Greg hoped wouldn't crop up but apparently it has.")
+                raise LabscriptError("Maximum group length is larger than the separation between groups! This is an edge case that Greg hoped wouldn't crop up but apparently it has (see Cavity Lab wiki page on 9/25/2018).")
 
             t_prev = group.time
         return
@@ -333,7 +337,7 @@ class SpectrumM4X6620Tab(DeviceTab):
 class SpectrumM4X6620Worker(Worker):
     def init(self):
         self.final_values = {'channel 0' : {}}
-        self.remote = True
+        self.remote = False
         if self.remote:
             self.card = spcm_hOpen("TCPIP::171.64.57.188::INSTR")  ### remote card mode only for testing purposes
         else:
@@ -359,7 +363,7 @@ class SpectrumM4X6620Worker(Worker):
         if err: raise LabscriptError("Error detected in settings: " + str(err))
 
         if self.mode == 'multi':
-            spcm_dwSetParam_i32(self.card, SPC_CARDMODE, SPC_REP_STD_MULTI)
+            err = spcm_dwSetParam_i32(self.card, SPC_CARDMODE, SPC_REP_STD_MULTI)
             if err: raise LabscriptError("Error detected in settings: " + str(err))
         elif self.mode == 'single':
             err = spcm_dwSetParam_i32(self.card, SPC_CARDMODE, SPC_REP_STD_SINGLE)
@@ -373,7 +377,7 @@ class SpectrumM4X6620Worker(Worker):
     def check_remote_values(self):
         results = {'channel 0': {}}
         results['channel 0']['freq'] = 0
-        results['channel 0']['Power'] = self.power
+        results['channel 0']['Power'] = 0
         results['channel 0']['phase'] = 0
         return results
     def program_manual(self,front_panel_values):
@@ -395,6 +399,7 @@ class SpectrumM4X6620Worker(Worker):
         if (self.num_chs == 3) or (self.num_chs > 4):
             raise LabscriptError("Spectrum card only supports 1, 2, or 4 channels. Please remove a channel or add a dummy channel.")
 
+        channel_enable_word = 0
         for channel in self.channels:
 
             ## Setting amplitude corresponding to chosen power.
@@ -402,43 +407,51 @@ class SpectrumM4X6620Worker(Worker):
             if amplitude < 80: raise LabscriptError("Power below acceptable range. Min power = -23.9 dBm")
             if amplitude > 2500: raise LabscriptError("Power above acceptable range. Max power = 5.9 dBm.")
             if channel.port == 0:
+                channel_enable_word |= CHANNEL0
                 err=spcm_dwSetParam_i32(self.card, SPC_AMP0, int32(amplitude))
                 if err: raise LabscriptError("Error detected in settings: " + str(err) + "Amplitude: " + str(amplitude))
-                err = spcm_dwSetParam_i32(self.card, SPC_CHENABLE, CHANNEL0)
-                if err: raise LabscriptError("Error detected in settings: " + str(err))
                 err = spcm_dwSetParam_i32(self.card, SPC_ENABLEOUT0, 1)
                 if err: raise LabscriptError("Error detected in settings: " + str(err))
             if channel.port == 1:
+                channel_enable_word |= CHANNEL1
                 err=spcm_dwSetParam_i32(self.card, SPC_AMP1, int32(amplitude))
                 if err: raise LabscriptError("Error detected in settings: " + str(err) + "Amplitude: " + str(amplitude))
-                err = spcm_dwSetParam_i32(self.card, SPC_CHENABLE, CHANNEL1)
-                if err: raise LabscriptError("Error detected in settings: " + str(err))
                 err = spcm_dwSetParam_i32(self.card, SPC_ENABLEOUT1, 1)
                 if err: raise LabscriptError("Error detected in settings: " + str(err))
             if channel.port == 2:
+                channel_enable_word |= CHANNEL2
                 err=spcm_dwSetParam_i32(self.card, SPC_AMP2, int32(amplitude))
                 if err: raise LabscriptError("Error detected in settings: " + str(err) + "Amplitude: " + str(amplitude))
-                err = spcm_dwSetParam_i32(self.card, SPC_CHENABLE, CHANNEL2)
-                if err: raise LabscriptError("Error detected in settings: " + str(err))
                 err = spcm_dwSetParam_i32(self.card, SPC_ENABLEOUT2, 1)
                 if err: raise LabscriptError("Error detected in settings: " + str(err))
             if channel.port == 3:
+                channel_enable_word |= CHANNEL3
                 err=spcm_dwSetParam_i32(self.card, SPC_AMP3, int32(amplitude))
                 if err: raise LabscriptError("Error detected in settings: " + str(err) + "Amplitude: " + str(amplitude))
-                err = spcm_dwSetParam_i32(self.card, SPC_CHENABLE, CHANNEL3)
-                if err: raise LabscriptError("Error detected in settings: " + str(err))
                 err = spcm_dwSetParam_i32(self.card, SPC_ENABLEOUT3, 1)
                 if err: raise LabscriptError("Error detected in settings: " + str(err))
 
+#         print(channel_enable_word)
+        err = spcm_dwSetParam_i32(self.card, SPC_CHENABLE, int32(channel_enable_word))
+        if err: raise LabscriptError("Error detected in settings: " + str(err))
 
         #### MULTI MODE #### Each segment must be same size.
         if (self.mode == 'multi'):
-#                 lSetChannels = int32 (0)
-#                 spcm_dwGetParam_i32 (self.card, SPC_CHCOUNT,     byref (lSetChannels))
-#                 print(lSetChannels.value)
-#                 lBytesPerSample = int32 (0)
-#                 spcm_dwGetParam_i32 (self.card, SPC_MIINST_BYTESPERSAMPLE,  byref (lBytesPerSample))
-#                 print(lBytesPerSample.value)
+#             lSetChannels = int32 (0)
+#             spcm_dwGetParam_i32 (self.card, SPC_CHCOUNT,     byref (lSetChannels))
+#             print('num chs')
+#             print(lSetChannels.value)
+#             lBytesPerSample = int32 (0)
+#             spcm_dwGetParam_i32 (self.card, SPC_MIINST_BYTESPERSAMPLE,  byref (lBytesPerSample))
+#             print(lBytesPerSample.value)
+#             lFeats = int32 (0)
+#             spcm_dwGetParam_i32 (self.card, SPC_PCIFEATURES,  byref (lFeats))
+#             print(lFeats.value)
+
+            lStatus = int32 (0)
+            spcm_dwGetParam_i32 (self.card, SPC_M2STATUS,  byref (lStatus))
+#             print('STATUS------------------------------')
+#             print(lStatus.value)
 
 
             self.num_groups = len(self.sample_groups)
@@ -451,10 +464,11 @@ class SpectrumM4X6620Worker(Worker):
             if (self.samples % 32) != 0: raise LabscriptError("Number of samples must be a multiple of 32") # Not *strictly* necessary: see p.105 of Spectrum manual
             size = uint64(self.num_groups * self.num_chs * self.samples * self.bytesPerSample)
             self.buffer = create_string_buffer(size.value)
-            waveform = cast(self.buffer, c_void_p)     # Void pointer so we can do pointer arithmentic below to fill the buffer faster using memmove()
             print("Filling waveform...")
-            for i in range(self.num_groups):
-                group = self.sample_groups[i]
+
+            np_waveform = np.zeros(self.num_groups * self.num_chs * self.samples, dtype=int16)
+
+            for i,group in enumerate(self.sample_groups):
 
                 for j in range(len(group.segments)):
                     seg = group.segments[j]
@@ -462,36 +476,47 @@ class SpectrumM4X6620Worker(Worker):
                     segSamples = int(seg.duration * self.clock_freq)
                     t = np.linspace(0, seg.duration, segSamples)
 
-                    pulse = seg.pulses[0]     # !!! Only support ONE pulse per segment for the moment
-                    if pulse.ramp_type == "linear":
-                        ramp = pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=seg.duration, f1=pulse.end, method='linear', phi=pulse.phase)
-                        ramp = ramp.astype(int16)
-                    elif pulse.ramp_type == "quadratic":
-                        ramp = pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=seg.duration, f1=pulse.end, method='quadratic', phi=pulse.phase)
-                        ramp = ramp.astype(int16)
-                    else: ## If no allowed ramp is specified, then it is assumed that the frequency remains stationary.
-                        ramp = pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=seg.duration, f1=pulse.start, method='linear', phi=pulse.phase)
-                        ramp = ramp.astype(int16)
+                    ramp = np.zeros(segSamples)
+                    for pulse in seg.pulses:
+                        if pulse.ramp_type == "linear":
+                            ramp += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=seg.duration, f1=pulse.end, method='linear', phi=pulse.phase)
+                        elif pulse.ramp_type == "quadratic":
+                            ramp += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=seg.duration, f1=pulse.end, method='quadratic', phi=pulse.phase)
+                        else: ## If no allowed ramp is specified, then it is assumed that the frequency remains stationary.
+                            ramp += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=seg.duration, f1=pulse.start, method='linear', phi=pulse.phase)
 
-                    # Copy the data over into the buffer, using pointer arithmetic to put it in the correct location in memory
-                    # See "Data Organization" (p. 79) of manual
-                    pGroupOffs = i*self.num_chs*self.samples*sizeof(int16)
-                    pChannelOffs = seg.port*self.samples*sizeof(int16)
-                    pSegmOffs = (seg.time - group.time)*self.clock_freq*sizeof(int16)
-                    pointerOffset = int(pGroupOffs + pChannelOffs + pSegmOffs)
-                    memmove(waveform.value+pointerOffset, ramp.ctypes.get_data(), segSamples*sizeof(int16))
+                    ramp = ramp.astype(int16)
+
+                    groupOffs = int(i * self.samples * self.num_chs)
+                    segmOffs = int((seg.time - group.time) * self.clock_freq * self.num_chs)
+                    channelOffs = int(seg.port)
+                    offset = groupOffs + segmOffs + channelOffs
+
+                    begin = offset
+                    end = offset + (len(ramp) * int(self.num_chs))
+                    increment = int(self.num_chs)
+                    np_waveform[begin:end:increment] = ramp
+
+
+            memmove(self.buffer, np_waveform.ctypes.data_as(ptr16), size.value)
+
+#             with open('X:\\dataDump.csv', 'w') as f:
+#                 for i in range(0, self.num_groups * self.num_chs * self.samples):
+#                     print >> f, np_waveform[i]
 
             print("Waveform filled")
-            waveform = cast(waveform, ptr16)
 
 
-#                 with open('X:\\dataDump.csv', 'w') as f:
-#                     for i in range(0, self.samples * self.num_segments):
-#                         print >> f, waveform[i]
             ## Card settings specific to multimode
-            spcm_dwSetParam_i32(self.card, SPC_MEMSIZE, self.samples * self.num_segments)     # !!! Must extend to account for other channels?
-            spcm_dwSetParam_i32(self.card, SPC_SEGMENTSIZE, self.samples)
-            spcm_dwSetParam_i32(self.card, SPC_LOOPS, 1)
+#             print(self.samples)
+#             print(self.num_groups)
+#             print(self.num_chs)
+            err=spcm_dwSetParam_i32(self.card, SPC_MEMSIZE, self.samples * self.num_groups)
+            if err: raise LabscriptError("Error detected in settings: " + str(err))
+            err=spcm_dwSetParam_i32(self.card, SPC_SEGMENTSIZE, self.samples)
+            if err: raise LabscriptError("Error detected in settings: " + str(err))
+            err=spcm_dwSetParam_i32(self.card, SPC_LOOPS, 1)
+            if err: raise LabscriptError("Error detected in settings: " + str(err))
 
         #### SEQUENCE MODE ####
         elif (self.mode == 'sequence'):
@@ -551,9 +576,11 @@ class SpectrumM4X6620Worker(Worker):
     def transfer_buffer(self):
         print("Transferring data to card...")
         if self.mode == 'Off': return
-        dw = spcm_dwDefTransfer_i64 (self.card, SPCM_BUF_DATA, SPCM_DIR_PCTOCARD, int32 (0), self.buffer, uint64 (0), uint64(self.samples * self.num_segments * self.bytesPerSample))
+        dw = spcm_dwDefTransfer_i64 (self.card, SPCM_BUF_DATA, SPCM_DIR_PCTOCARD, int32 (0), self.buffer, uint64 (0), uint64(self.num_groups * self.num_chs * self.samples * self.bytesPerSample))
         dwError = spcm_dwSetParam_i32 (self.card, SPC_M2CMD, M2CMD_DATA_STARTDMA | M2CMD_DATA_WAITDMA)
         if((dw + dwError) != 0): raise LabscriptError("Error detected during data transfer to card. Error: " + str(dw) + " " + str(dwError))
+        self.buffer = None     # Set to None so the garbage collector can get rid of the buffer when we're done
+        gc.collect()           # Tell the garbage collector to throw away the buffer data (we get a memory leak if we don't explicitly do this)
         print("Transfer complete")
 
     def transition_to_buffered(self,device_name,h5file,initial_values,fresh):
@@ -604,6 +631,16 @@ class SpectrumM4X6620Worker(Worker):
 
                 self.sample_groups.append(sample_group(time,duration,segments))
 
+            if len(self.sample_groups) == 0:
+                raise LabscriptError("Did not find any sample groups. Either something is wrong, or you haven't instructed the Spectrum card to do anything.")
+
+
+            # Sort groups in time order (just in case)
+            self.sample_groups = sorted(self.sample_groups, key=lambda k: k.time)
+#             fig, ax = plt.subplots(1)
+#             self.make_segment_rects(self.sample_groups, ax)
+#             plt.show()
+
         buf_gen = self.generate_buffer()
         if buf_gen is True:
             ### Card Settings ###
@@ -614,6 +651,49 @@ class SpectrumM4X6620Worker(Worker):
             self.set_trigger()
 
         return self.final_values ### NOT CURRENTLY USED FOR ANY INFO TO SEND TO GUI. NECESSARY TO WORK WITH BLACS.
+
+    def make_segment_rects(self, sample_groups, ax):
+
+        # Create list for all the error patches
+        segm_rects = []
+        group_rects = []
+
+        last_t = 0
+
+        for i,group in enumerate(sample_groups):
+            group_rect = Rectangle((group.time, 0), group.duration, 4)
+            group_rects.append(group_rect)
+
+            ax.text(group.time + 0.5 * group.duration,-0.2, 'group ' + str(i),ha='center')
+            ax.axvline(group.time,color='k')
+
+            if group.time+group.duration > last_t:
+                last_t = group.time+group.duration
+
+            for j,segment in enumerate(group.segments):
+                segm_rect = Rectangle((segment.time, segment.port), segment.duration, 1)
+                segm_rects.append(segm_rect)
+
+                ax.text(segment.time,segment.port+0.5, ' s' + str(j),ha='left')
+
+        # Create patch collection with specified colour/alpha
+        group_pc = PatchCollection(group_rects, facecolor='lightgray', alpha=1, edgecolor='gray')
+        segm_pc = PatchCollection(segm_rects, facecolor='r', alpha=0.5, edgecolor='None')
+
+        # Add collection to axes
+        ax.add_collection(group_pc)
+        ax.add_collection(segm_pc)
+
+        ax.set_xlim(0,last_t * 1.02)
+        ax.set_ylim(-0.5,4.2)
+
+        ax.set_yticks([0.5,1.5,2.5,3.5],minor=True)
+        ax.set_yticklabels([0,1,2,3],minor=True)
+        ax.set_yticklabels(['','','','','','','','','',''],minor=False)
+        ax.tick_params(axis='y', which='minor', length = 0)
+
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel('Channel')
 
     ### Other Functions, manual mode is not utilized for the spectrum instrumentation card. ###
     def abort_transition_to_buffered(self):
