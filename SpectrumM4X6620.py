@@ -37,27 +37,40 @@ class pulse():
         self.phase = phase
         self.amp = amplitude
         self.ramp_type = ramp_type ## String. Can be linear, quadratic, None
+    #    self.id = ''
 
-class segment():
-    def __init__(self,t,duration,port,loops=1):
+    # def generate_id():
+    #     self.id = 'r' + self.ramp_type + ';s' + str(self.start) + ';e' + str(self.end) + ';p' + str(self.phase) + ';a' + str(self.amp)
+    #     return self.id
+
+class waveform():
+    def __init__(self,t,duration,port,id):
         self.time = t
         self.duration = duration
         self.pulses = []
-        self.loops = loops
+        # self.loops = loops
         self.port = port     # !!! Or use channel name?
+        self.id = id
 
     def add_pulse(self,start_freq,end_freq,phase,amplitude,ramp_type):
         self.pulses.append(pulse(start_freq,end_freq,phase,amplitude,ramp_type))
 
-# Structure which contains a list of segments (frequency comb, ramps, single frequencies, etc.)
-class sample_group():
-    def __init__(self,time,duration,segments):
+    # def generate_id(self):
+    #     self.id = ''
+    #     for pulse in self.pulses:
+    #
+    #     return self.id
+
+# Structure which contains a list of waveforms (frequency comb, ramps, single frequencies, etc.)
+class waveform_group():
+    def __init__(self,time,duration,waveforms,id):
         self.time = time
         self.duration = duration
-        self.segments = segments
+        self.waveforms = waveforms
+        self.id = id
 
-    def add_segment(self,segment):
-        self.segments.append(segment)
+    def add_waveform(self,waveform):
+        self.waveforms.append(waveform)
 
 class channel_settings():
     def __init__(self,name='',power=0,port=0):
@@ -67,7 +80,7 @@ class channel_settings():
 
 class sample_data():
     def __init__(self,channels,mode,clock_freq):
-        self.sample_groups = []
+        self.waveform_groups = []
         self.mode = mode
         self.clock_freq = clock_freq
         self.channels = channels
@@ -83,7 +96,8 @@ class SpectrumM4X6620(IntermediateDevice):
 
         self.triggerDur = triggerDur
 
-        self.raw_segments = []
+        self.raw_waveforms = []
+        self.waveform_ids = set([])
 
         if trigger:
             if 'device' in trigger and 'connection' in trigger:
@@ -108,34 +122,49 @@ class SpectrumM4X6620(IntermediateDevice):
     def reset(self, t): # This doesn't do anything but must be here.
         return t
 
-    def single_freq(self, t, duration, freq, amplitude, phase, ch, loops = 1):
-        self.sweep_comb(t,duration,[freq],[freq],[amplitude],[phase],ch,'None',loops)
+    def single_freq(self, t, duration, freq, amplitude, phase, ch):
+        t_start = t
+        period = 1.0 / (2*pi*freq)
+        id = self.get_new_waveform_id()
+        while t+duration-t_start > period:
+            self.sweep_comb(t_start,period,[freq],[freq],[amplitude],[phase],ch,'None',id)
+            t_start += period
+
+        id2 = self.get_new_waveform_id()
+        self.sweep_comb(t_start,t+duration-t_start,[freq],[freq],[amplitude],[phase],ch,'None',id2)
 
     def sweep(self, t, duration, start_freq, end_freq, amplitude, phase, ch, ramp_type):
-        self.sweep_comb(t, duration, [start_freq], [end_freq], [amplitude], [phase], ch, ramp_type)
+        self.sweep_comb(t, duration, [start_freq], [end_freq], [amplitude], [phase], ch, ramp_type, self.get_new_waveform_id())
 
-    def comb(self,t,duration,freqs,amplitudes,phases,ch,loops=1):
-        self.sweep_comb(t,duration,freqs,freqs,amplitudes,phases,ch,'None',loops)
+    def comb(self,t,duration,freqs,amplitudes,phases,ch):
+        self.sweep_comb(t,duration,freqs,freqs,amplitudes,phases,ch,'None',self.get_new_waveform_id())
 
-    # Function that allows user to initialize a segment.
-    def sweep_comb(self, t, duration, start_freqs, end_freqs, amplitudes, phases, ch, ramp_type,loops=1):
-        seg = segment(t,duration,ch,loops)
+    # Function that allows user to initialize a waveform.
+    def sweep_comb(self, t, duration, start_freqs, end_freqs, amplitudes, phases, ch, ramp_type, id):
+        wvf = waveform(t,duration,ch,id)
         for i in range(len(start_freqs)):
             if (amplitudes[i] < 0) or (amplitudes[i] > 1):
                 raise LabscriptError("Amplitude[" + str(i) + "] = " + str(amplitudes[i]) + " is outside the allowed range [0,1]")
-            seg.add_pulse(start_freqs[i],end_freqs[i],phases[i],amplitudes[i],ramp_type)
-        self.raw_segments.append(seg)
+            wvf.add_pulse(start_freqs[i],end_freqs[i],phases[i],amplitudes[i],ramp_type)
+        self.raw_waveforms.append(wvf)
+        self.waveform_ids.add(id)
         return t+duration
 
-    # Function specifically used for tweezers.
-    def tweezers(self,t,number,loop=True):
-        if loop: loops = 0
-        else: loops = 1
+    def get_new_waveform_id():
+        new_id = len(self.waveform_ids)
+        if new_id in self.waveform_ids:
+            raise LabscriptError('Waveform ID collision: new ID already found in database')
+        return new_id
 
-        freqs = np.linspace(start=MEGA(85),stop=MEGA(120),num=number)
-        phases=np.random.rand(number)
-        amplitudes = [2000 for i in range(number)]
-        self.comb(t,.002,freqs,amplitudes,phases,0,loops)
+    # # Function specifically used for tweezers.
+    # def tweezers(self,t,number,loop=True):
+    #     if loop: loops = 0
+    #     else: loops = 1
+    #
+    #     freqs = np.linspace(start=MEGA(85),stop=MEGA(120),num=number)
+    #     phases=np.random.rand(number)
+    #     amplitudes = [2000 for i in range(number)]
+    #     self.comb(t,.002,freqs,amplitudes,phases,0,loops)
 
 
     # Load profile table containing data into h5 file, using the same hierarchical structure from above.
@@ -158,31 +187,32 @@ class SpectrumM4X6620(IntermediateDevice):
             channel_table[i]['port'] = channel.port
         device.create_dataset('channel_settings', data=channel_table)
 
-        # Store sample groups
-        g = device.create_group('sample_groups')
-        for i,group in enumerate(self.sample_data.sample_groups):
+        # Store waveform groups
+        g = device.create_group('waveform_groups')
+        for i,group in enumerate(self.sample_data.waveform_groups):
             group_folder = g.create_group('group ' + str(i))
-            settings_dtypes = [('time', np.float), ('duration', np.float)]
-            settings_table = np.array((0,0),dtype=settings_dtypes)
+            settings_dtypes = [('time', np.float), ('duration', np.float), ('id', np.int)]
+            settings_table = np.array((0,0,0),dtype=settings_dtypes)
             settings_table['time'] = group.time
             settings_table['duration'] = group.duration
+            settings_table['id'] = group.id
             group_folder.create_dataset('group_settings', data=settings_table)
 
 
-            # Store segment settings
-            for segment in group.segments:
-                name = "Segment: t = " + str(segment.time) + ", dur = " + str(segment.duration)
-                if name in group_folder:   ## If segment already exists, add to already created group
+            # Store waveforms
+            for waveform in group.waveforms:
+                name = "Waveform: t = " + str(waveform.time) + ", dur = " + str(waveform.duration)
+                if name in group_folder:   ## If waveform already exists, add to already created group
                     grp = group_folder[name]
                 else:
                     grp = group_folder.create_group(name)
                     profile_dtypes = [('time', np.float), ('duration', np.float), ('loops',int), ('port',int)]
                     profile_table = np.zeros(1, dtype=profile_dtypes)
-                    profile_table['time'] = segment.time
-                    profile_table['duration'] = segment.duration
-                    profile_table['loops'] = segment.loops
-                    profile_table['port'] = segment.port
-                    grp.create_dataset('segment_settings', data=profile_table)
+                    profile_table['time'] = waveform.time
+                    profile_table['duration'] = waveform.duration
+                    profile_table['loops'] = waveform.loops
+                    profile_table['port'] = waveform.port
+                    grp.create_dataset('waveform_settings', data=profile_table)
 
                 # Store pulses
                 profile_dtypes = [('start_freq', np.float),
@@ -190,9 +220,9 @@ class SpectrumM4X6620(IntermediateDevice):
                                   ('phase', np.float),
                                   ('amp', np.float),
                                   ('ramp_type',"S10")]
-                profile_table = np.zeros(len(segment.pulses), dtype=profile_dtypes)
-                for i in range(len(segment.pulses)):
-                    pulse = segment.pulses[i]
+                profile_table = np.zeros(len(waveform.pulses), dtype=profile_dtypes)
+                for i in range(len(waveform.pulses)):
+                    pulse = waveform.pulses[i]
 
                     profile_table['start_freq'][i] = pulse.start
                     profile_table['end_freq'][i] = pulse.end
@@ -200,7 +230,7 @@ class SpectrumM4X6620(IntermediateDevice):
                     profile_table['amp'][i] = pulse.amp
                     profile_table['ramp_type'][i] = pulse.ramp_type
 
-                if 'pulse_data' in grp: ### If segment already has associated data, add to the existing dataset.
+                if 'pulse_data' in grp: ### If waveform already has associated data, add to the existing dataset.
                     d = grp['pulse_data']
                     d.resize((d.shape[0]+profile_table.shape[0]), axis=0)
                     d[-profile_table.shape[0]:] = profile_table
@@ -210,49 +240,49 @@ class SpectrumM4X6620(IntermediateDevice):
 
 
     def stop(self):
-        self.check_channel_collisions(self.raw_segments)
-        self.sample_data.sample_groups = self.make_sample_groups(self.raw_segments)
+        # self.check_channel_collisions(self.raw_waveforms)
+        # self.sample_data.waveform_groups = self.make_sample_groups(self.raw_waveforms)
+        #
+        # # Sort groups in time order (just in case)
+        # self.sample_data.waveform_groups = sorted(self.sample_data.waveform_groups, key=lambda k: k.time)
+        #
+        # max_dur = 0
+        # for group in self.sample_data.waveform_groups:
+        #     if group.duration > max_dur:
+        #         max_dur = group.duration
 
-        # Sort groups in time order (just in case)
-        self.sample_data.sample_groups = sorted(self.sample_data.sample_groups, key=lambda k: k.time)
-
-        max_dur = 0
-        for group in self.sample_data.sample_groups:
-            if group.duration > max_dur:
-                max_dur = group.duration
-
-        # Fire the trigger at the appropriate times, and check that the timing works out
-        t_prev = float('-inf')
-        for group in self.sample_data.sample_groups:
-            self.triggerDO.go_high(group.time)
-            self.triggerDO.go_low(group.time+self.triggerDur)
-
-            if self.triggerDur >= group.duration:
-                raise LabscriptError("Trigger duration too long (i.e. longer than the sample group duration; might not be a problem depending on how the card interprets trigger edges)")
-
-            if group.time - t_prev < max_dur:
-                raise LabscriptError("Maximum group length is larger than the separation between groups! This is an edge case that Greg hoped wouldn't crop up but apparently it has (see Cavity Lab wiki page on 9/25/2018).")
-
-            t_prev = group.time
+        # # Fire the trigger at the appropriate times, and check that the timing works out
+        # t_prev = float('-inf')
+        # for group in self.sample_data.sample_groups:
+        #     self.triggerDO.go_high(group.time)
+        #     self.triggerDO.go_low(group.time+self.triggerDur)
+        #
+        #     if self.triggerDur >= group.duration:
+        #         raise LabscriptError("Trigger duration too long (i.e. longer than the sample group duration; might not be a problem depending on how the card interprets trigger edges)")
+        #
+        #     if group.time - t_prev < max_dur:
+        #         raise LabscriptError("Maximum group length is larger than the separation between groups! This is an edge case that Greg hoped wouldn't crop up but apparently it has (see Cavity Lab wiki page on 9/25/2018).")
+        #
+        #     t_prev = group.time
         return
 
 
-    # Organize an array of segments into groups of overlapping segments
-    def make_sample_groups(self, segments):
-        segments = sorted(segments, key=lambda k: k.time)     # Crucial to tell apart edge cases where times are identical
+    # Organize an array of waveforms into groups of overlapping waveforms
+    def make_waveform_groups(self, waveforms):
+        waveforms = sorted(waveforms, key=lambda k: k.time)     # Crucial to tell apart edge cases where times are identical
 
-        flagAddRemoveSegm = []
-        for i in range(0,len(segments)):
-            flagAddRemoveSegm.append({'t': segments[i].time, 'flag': 1})
-            flagAddRemoveSegm.append({'t': segments[i].time + segments[i].duration, 'flag': -1})
+        flagAddRemoveWvf = []
+        for i in range(0,len(waveforms)):
+            flagAddRemoveWvf.append({'t': waveforms[i].time, 'flag': 1})
+            flagAddRemoveWvf.append({'t': waveforms[i].time + waveforms[i].duration, 'flag': -1})
 
-        flagAddRemoveSegm = sorted(flagAddRemoveSegm, key=lambda k: k['t'])
+        flagAddRemoveWvf = sorted(flagAddRemoveWvf, key=lambda k: k['t'])
 
         numOverlaps = 0
         groupStartIndices = []
         groupEndIndices = []
-        for i in range(0,len(flagAddRemoveSegm)):
-            nextNumOverlaps = numOverlaps + flagAddRemoveSegm[i]['flag']
+        for i in range(0,len(flagAddRemoveWvf)):
+            nextNumOverlaps = numOverlaps + flagAddRemoveWvf[i]['flag']
 
             if numOverlaps == 0:
                 groupStartIndices.append(i)
@@ -263,36 +293,40 @@ class SpectrumM4X6620(IntermediateDevice):
             numOverlaps = nextNumOverlaps
 
         if len(groupStartIndices) != len(groupEndIndices):
-            raise LabscriptError("Something went wrong in make_segment_overlap_groups(): length of groupStartIndices should be equal to length of groupEndIndices")
+            raise LabscriptError("Something went wrong in make_waveform_groups(): length of groupStartIndices should be equal to length of groupEndIndices")
             return
 
 
         groups = []
-        totalSegms = 0
-        for i in range(0,len(groupStartIndices)):
-            t0 = flagAddRemoveSegm[groupStartIndices[i]]['t']
-            t1 = flagAddRemoveSegm[groupEndIndices[i]]['t']
+        totalWvfs = 0
+        for i in range(len(groupStartIndices)):
+            t0 = flagAddRemoveWvf[groupStartIndices[i]]['t']
+            t1 = flagAddRemoveWvf[groupEndIndices[i]]['t']
 
-            segmsInGroup = filter(lambda k: (k.time >= t0) and (k.time + k.duration <= t1), segments)
-            totalSegms += len(segmsInGroup)
+            wvfsInGroup = filter(lambda k: (k.time >= t0) and (k.time + k.duration <= t1), waveforms)
+            totalWvfs += len(wvfsInGroup)
 
-            groups.append(sample_group(t0,t1-t0,segmsInGroup))
+            if len(wvfsInGroup) == 1:
+                id = wvfsInGroup[0].id
+            else:
+                id = get_new_waveform_id()
+            groups.append(waveform_group(t0,t1-t0,wvfsInGroup,id))
 
-        if totalSegms != len(segments):
-            raise LabscriptError("Something went wrong in make_segment_overlap_groups(): totalSegms after grouping should be equal to the total number of segments")
+        if totalWvfs != len(waveforms):
+            raise LabscriptError("Something went wrong in make_waveform_groups(): totalWvfs after grouping should be equal to the total number of waveforms")
             return
 
         return groups
 
     # Check for channel collisions (single channel can't do multiple things at once!)
-    def check_channel_collisions(self, segments):
+    def check_channel_collisions(self, waveforms):
         for port in range(len(self.sample_data.channels)):
-            segmentsPerPort = filter(lambda k: k.port == port, segments)
+            wvfsPerPort = filter(lambda k: k.port == port, waveforms)
 
-            groupsPerPort = self.make_sample_groups(segmentsPerPort)
+            groupsPerPort = self.make_waveform_groups(wvfsPerPort)
             for i in range(0,len(groupsPerPort)):
-                if len(groupsPerPort[i].segments) > 1:
-                    raise LabscriptError("Port collision: you've instructed port " + str(port) + " to play two segments at once")
+                if len(groupsPerPort[i].waveforms) > 1:
+                    raise LabscriptError("Port collision: you've instructed port " + str(port) + " to play two waveforms at once")
 
 
 @BLACS_tab
