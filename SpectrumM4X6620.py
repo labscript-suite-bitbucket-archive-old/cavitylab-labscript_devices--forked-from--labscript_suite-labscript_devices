@@ -156,6 +156,10 @@ class SpectrumM4X6620(IntermediateDevice):
         for waveform in self.raw_waveforms:
             print(waveform)
 
+        print('---------------------------')
+        for group in self.sample_data.waveform_groups:
+            print(group)
+
         device = hdf5_file.create_group('/devices/' + self.name)
 
         # Store device settings
@@ -333,7 +337,7 @@ class SpectrumM4X6620(IntermediateDevice):
 
     # If part of a periodic waveform overlaps with a nonperiodic group, then add this section of the waveform to the group
     # Add the rest of the periodic waveform as a looping group
-    def combine_periodic_nonperiodic_groups(periodicWvfs, nonPeriodicWvfGroups):
+    def combine_periodic_nonperiodic_groups(self, periodicWvfs, nonPeriodicWvfGroups):
 
         result_groups = []
 
@@ -343,11 +347,11 @@ class SpectrumM4X6620(IntermediateDevice):
         def split_periodic_waveforms(waveforms, t_start, t_end):
 
             result_waveforms = []
-            overlappedWvfs = filter(lambda k: (k.time >= t_start) and (k.time + k.loops * k.duration <= t_end), waveforms)
+            overlappedWvfs = filter(lambda k: (k.time <= t_end) and (k.time + k.loops * k.duration >= t_start), waveforms)
 
             if len(overlappedWvfs) > 1:
                 raise LabscriptError('Cannot (yet) deal with multiple overlapped periodic waveforms. Please remove the overlapped waveforms')
-            else if len(overlappedWvfs) == 1:
+            elif len(overlappedWvfs) == 1:
                 wvf = overlappedWvfs[0]
 
                 t0 = wvf.time
@@ -357,25 +361,27 @@ class SpectrumM4X6620(IntermediateDevice):
                 t_start_p = max(t0,t_start)
                 t_end_p = min(t1,t_end)
 
-                t_n = int(t0 + math.ceil(float(t_start_p - t0) / float(dur)))
+                t_n = int(t0 + math.ceil(float(t_start_p - t0) / float(dur)) * dur)
                 n_full_loops = int(math.floor(float(t_end_p - t_n) / float(dur)))
 
-
                 # Full middle loops
-                waveform_full_loops = waveform(t_n,dur,wvf.port,loops=n_full_loops,is_periodic=True)
-                result_waveforms.append(waveform_full_loops)
+                if n_full_loops > 0:
+                    waveform_full_loops = waveform(t_n,dur,wvf.port,loops=n_full_loops,is_periodic=True)
+                    result_waveforms.append(waveform_full_loops)
 
                 # Partial start loop
                 if t_start_p != t_n:
                     dt_start = t_start_p - (t_n - dur)
                     waveform_partial_start =  waveform(t_start_p,dur-dt_start,wvf.port,loops=1,is_periodic=False)
                     waveform_partial_start.sample_start = dt_start
+                    waveform_partial_start.sample_end = dur
                     result_waveforms.append(waveform_partial_start)
 
                 # Partial end loop
                 if t_end_p != (t_n + n_full_loops * dur):
                     dt_end = t_end_p - (t_n + n_full_loops * dur)
                     waveform_partial_end =  waveform(t_n+(n_full_loops * dur),dt_end,wvf.port,loops=1,is_periodic=False)
+                    waveform_partial_end.sample_start = 0
                     waveform_partial_end.sample_end = dt_end
                     result_waveforms.append(waveform_partial_end)
 
@@ -396,7 +402,7 @@ class SpectrumM4X6620(IntermediateDevice):
                 t_start = float('-inf')
                 t_end = group.time
 
-            else if group == None:     # Final gap
+            elif group == None:     # Final gap
                 prev_group = nonPeriodicWvfGroups[i-1]
                 t_start = prev_group.time + prev_group.duration
                 t_end = float('inf')
@@ -410,18 +416,19 @@ class SpectrumM4X6620(IntermediateDevice):
 
                 newWvfs = split_periodic_waveforms(periodicWvfs, t_start, t_end)
 
-                # Create new groups for each piece of the split waveform
-                loops = newWvfs[0].loops
-                newWvfs[0].loops = 1
-                newWvfs[0].is_periodic = False
+                if len(newWvfs) > 0:
+                    # Create new groups for each piece of the split waveform
+                    loops = newWvfs[0].loops
+                    newWvfs[0].loops = 1
+                    newWvfs[0].is_periodic = False
 
-                newGroups = []
-                for wvf in newWvfs:
-                    newGrp = waveform_group(wvf.time,wvf.duration,[wvf],loops=1)
-                    newGroups.append(newGrp)
+                    newGroups = []
+                    for wvf in newWvfs:
+                        newGrp = waveform_group(wvf.time,wvf.duration,[wvf],loops=1)
+                        newGroups.append(newGrp)
 
-                newGroups[0].loops = loops     # Only the middle group actually loops
-                result_groups.extend(newGroups)
+                    newGroups[0].loops = loops     # Only the middle group actually loops
+                    result_groups.extend(newGroups)
 
             # ---------------------------------------------------------------------------
 
@@ -440,7 +447,7 @@ class SpectrumM4X6620(IntermediateDevice):
                 for wvf in newWvfs:
                     group.add_waveform(wvf)
 
-                result_groups.extend(newGroups)
+                result_groups.append(group)
 
             # ---------------------------------------------------------------------------
 
