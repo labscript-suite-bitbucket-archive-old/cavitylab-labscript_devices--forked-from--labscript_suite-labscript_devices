@@ -39,7 +39,7 @@ class pulse():
         self.ramp_type = ramp_type ## String. Can be linear, quadratic, None
 
 class waveform():
-    def __init__(self,time,duration,port,loops=1,is_periodic=False):
+    def __init__(self,time,duration,port,loops=1,is_periodic=False,pulses=[]):
         self.time = time
         self.duration = duration
         self.port = port     # !!! Or use channel name?
@@ -47,7 +47,10 @@ class waveform():
 
         self.is_periodic = is_periodic
 
+        # Make new copies of pulses
         self.pulses = []
+        for p in pulses:
+            self.pulses.append(pulse(p.start,p.end,p.phase,p.amp,p.ramp_type))
 
         self.sample_start = 0
         self.sample_end = duration
@@ -118,7 +121,7 @@ class SpectrumM4X6620(IntermediateDevice):
         return t
 
     def single_freq(self, t, duration, freq, amplitude, phase, ch, loops=1):
-        self.sweep_comb(t, duration, [freq], [freq], [amplitude], [phase], ch, ramp_type, loops)
+        self.sweep_comb(t, duration, [freq], [freq], [amplitude], [phase], ch, 'None', loops)
 
     def sweep(self, t, duration, start_freq, end_freq, amplitude, phase, ch, ramp_type, loops=1):
         self.sweep_comb(t, duration, [start_freq], [end_freq], [amplitude], [phase], ch, ramp_type, loops)
@@ -128,7 +131,17 @@ class SpectrumM4X6620(IntermediateDevice):
 
     # Function that allows user to initialize a waveform.
     def sweep_comb(self, t, duration, start_freqs, end_freqs, amplitudes, phases, ch, ramp_type, loops=1):
-        wvf = waveform(t,duration,ch,loops,is_periodic=(loops > 1))
+
+        # Convert from time in seconds to time in sample chunks (1 sample chunk = 32 samples)
+        t_c = int(math.floor(float(t * self.sample_data.clock_freq * 10**6) / 32.0))
+        duration_c = int(math.floor(float(duration * self.sample_data.clock_freq * 10**6) / 32.0))
+
+        if loops > 2**32 - 1:
+            raise LabscriptError('Too many loops requested. Number of loops must be less than 2^32')
+        if duration_c < 12:
+            raise LabscriptError('Duration of segment is too short. Segment duration must be at least 12 sample chunks ( = 768ns)')
+
+        wvf = waveform(t_c,duration_c,ch,loops,is_periodic=(loops > 1))
 
         for i in range(len(start_freqs)):
             if (amplitudes[i] < 0) or (amplitudes[i] > 1):
@@ -182,10 +195,11 @@ class SpectrumM4X6620(IntermediateDevice):
         g = device.create_group('waveform_groups')
         for i,group in enumerate(self.sample_data.waveform_groups):
             group_folder = g.create_group('group ' + str(i))
-            settings_dtypes = [('time', np.float), ('duration', np.float)]
-            settings_table = np.array((0,0),dtype=settings_dtypes)
+            settings_dtypes = [('time', np.int), ('duration', np.int), ('loops', np.int)]
+            settings_table = np.array((0,0,0),dtype=settings_dtypes)
             settings_table['time'] = group.time
             settings_table['duration'] = group.duration
+            settings_table['loops'] = group.loops
             group_folder.create_dataset('group_settings', data=settings_table)
 
 
@@ -196,12 +210,14 @@ class SpectrumM4X6620(IntermediateDevice):
                     grp = group_folder[name]
                 else:
                     grp = group_folder.create_group(name)
-                    profile_dtypes = [('time', np.float), ('duration', np.float), ('loops',int), ('port',int)]
+                    profile_dtypes = [('time', int), ('duration', int), ('loops', int), ('port', int), ('sample_start', int), ('sample_end', int)]
                     profile_table = np.zeros(1, dtype=profile_dtypes)
                     profile_table['time'] = waveform.time
                     profile_table['duration'] = waveform.duration
                     profile_table['loops'] = waveform.loops
                     profile_table['port'] = waveform.port
+                    profile_table['sample_start'] = waveform.sample_start
+                    profile_table['sample_end'] = waveform.sample_end
                     grp.create_dataset('waveform_settings', data=profile_table)
 
                 # Store pulses
@@ -211,6 +227,11 @@ class SpectrumM4X6620(IntermediateDevice):
                                   ('amp', np.float),
                                   ('ramp_type',"S10")]
                 profile_table = np.zeros(len(waveform.pulses), dtype=profile_dtypes)
+
+
+                if len(waveform.pulses) == 0:
+                    raise LabscriptError('Something went wrong in generating Spectrum card data: waveform does not have any pulse data')
+
                 for i in range(len(waveform.pulses)):
                     pulse = waveform.pulses[i]
 
@@ -335,59 +356,60 @@ class SpectrumM4X6620(IntermediateDevice):
                     raise LabscriptError("Port collision: you've instructed port " + str(port) + " to play two waveforms at once")
 
 
+    # Extracts a section of a periodic waveform between t = (t_start,t_end)
+    # Result comes in (at most) 3 parts: a partial waveform starting at t_start, a number of full loops in the middle, and a partial waveform ending at t_end
+    def split_periodic_waveforms(self, waveforms, t_start, t_end):
+
+        result_waveforms = []
+        overlappedWvfs = filter(lambda k: (k.time <= t_end) and (k.time + k.loops * k.duration >= t_start), waveforms)
+
+        overlapGroups = self.make_waveform_groups(overlappedWvfs)
+        for ogroup in overlapGroups:
+            if len(ogroup.waveforms) > 1:
+                raise LabscriptError('Cannot deal with overlapped periodic waveforms. Please remove the overlapped waveforms')
+
+            wvf = ogroup.waveforms[0]
+
+            t0 = wvf.time
+            t1 = wvf.time + wvf.loops * wvf.duration
+            dur = wvf.duration
+
+            t_start_p = max(t0,t_start)
+            t_end_p = min(t1,t_end)
+
+            t_n = int(t0 + math.ceil(float(t_start_p - t0) / float(dur)) * dur)
+            n_full_loops = int(math.floor(float(t_end_p - t_n) / float(dur)))
+
+            # Full middle loops
+            if n_full_loops > 0:
+                waveform_full_loops = waveform(t_n,dur,wvf.port,loops=n_full_loops,is_periodic=True,pulses=wvf.pulses)
+                result_waveforms.append(waveform_full_loops)
+
+            # Partial start loop
+            if t_start_p != t_n:
+                dt_start = t_start_p - (t_n - dur)
+                waveform_partial_start =  waveform(t_start_p,dur-dt_start,wvf.port,loops=1,is_periodic=False,pulses=wvf.pulses)
+                waveform_partial_start.sample_start = dt_start
+                waveform_partial_start.sample_end = dur
+                result_waveforms.append(waveform_partial_start)
+
+            # Partial end loop
+            if t_end_p != (t_n + n_full_loops * dur):
+                dt_end = t_end_p - (t_n + n_full_loops * dur)
+                waveform_partial_end =  waveform(t_n+(n_full_loops * dur),dt_end,wvf.port,loops=1,is_periodic=False,pulses=wvf.pulses)
+                waveform_partial_end.sample_start = 0
+                waveform_partial_end.sample_end = dt_end
+                result_waveforms.append(waveform_partial_end)
+
+
+        return result_waveforms
+
+
     # If part of a periodic waveform overlaps with a nonperiodic group, then add this section of the waveform to the group
     # Add the rest of the periodic waveform as a looping group
     def combine_periodic_nonperiodic_groups(self, periodicWvfs, nonPeriodicWvfGroups):
 
         result_groups = []
-
-
-        # Extracts a section of a periodic waveform between t = (t_start,t_end)
-        # Result comes in (at most) 3 parts: a partial waveform starting at t_start, a number of full loops in the middle, and a partial waveform ending at t_end
-        def split_periodic_waveforms(waveforms, t_start, t_end):
-
-            result_waveforms = []
-            overlappedWvfs = filter(lambda k: (k.time <= t_end) and (k.time + k.loops * k.duration >= t_start), waveforms)
-
-            if len(overlappedWvfs) > 1:
-                raise LabscriptError('Cannot (yet) deal with multiple overlapped periodic waveforms. Please remove the overlapped waveforms')
-            elif len(overlappedWvfs) == 1:
-                wvf = overlappedWvfs[0]
-
-                t0 = wvf.time
-                t1 = wvf.time + wvf.loops * wvf.duration
-                dur = wvf.duration
-
-                t_start_p = max(t0,t_start)
-                t_end_p = min(t1,t_end)
-
-                t_n = int(t0 + math.ceil(float(t_start_p - t0) / float(dur)) * dur)
-                n_full_loops = int(math.floor(float(t_end_p - t_n) / float(dur)))
-
-                # Full middle loops
-                if n_full_loops > 0:
-                    waveform_full_loops = waveform(t_n,dur,wvf.port,loops=n_full_loops,is_periodic=True)
-                    result_waveforms.append(waveform_full_loops)
-
-                # Partial start loop
-                if t_start_p != t_n:
-                    dt_start = t_start_p - (t_n - dur)
-                    waveform_partial_start =  waveform(t_start_p,dur-dt_start,wvf.port,loops=1,is_periodic=False)
-                    waveform_partial_start.sample_start = dt_start
-                    waveform_partial_start.sample_end = dur
-                    result_waveforms.append(waveform_partial_start)
-
-                # Partial end loop
-                if t_end_p != (t_n + n_full_loops * dur):
-                    dt_end = t_end_p - (t_n + n_full_loops * dur)
-                    waveform_partial_end =  waveform(t_n+(n_full_loops * dur),dt_end,wvf.port,loops=1,is_periodic=False)
-                    waveform_partial_end.sample_start = 0
-                    waveform_partial_end.sample_end = dt_end
-                    result_waveforms.append(waveform_partial_end)
-
-
-            return result_waveforms
-
 
         # Add a dummy group so we can automatically take care of the final gap
         nonPeriodicWvfGroups.append(None)
@@ -398,7 +420,11 @@ class SpectrumM4X6620(IntermediateDevice):
             # Handle gap *before* this group (and the final gap)
 
 
-            if i == 0:                 # First gap
+            if len(nonPeriodicWvfGroups) == 1:     # No groups (only the dummy)
+                t_start = float('-inf')
+                t_end = float('inf')
+
+            elif i == 0:            # First gap
                 t_start = float('-inf')
                 t_end = group.time
 
@@ -407,27 +433,26 @@ class SpectrumM4X6620(IntermediateDevice):
                 t_start = prev_group.time + prev_group.duration
                 t_end = float('inf')
 
-            else:                      # Middle gaps
+            else:                   # Middle gaps
                 prev_group = nonPeriodicWvfGroups[i-1]
                 t_start = prev_group.time + prev_group.duration
                 t_end = group.time
 
             if t_start != t_end:     # There is actually a gap between groups
 
-                newWvfs = split_periodic_waveforms(periodicWvfs, t_start, t_end)
+                newWvfs = self.split_periodic_waveforms(periodicWvfs, t_start, t_end)
 
                 if len(newWvfs) > 0:
-                    # Create new groups for each piece of the split waveform
-                    loops = newWvfs[0].loops
-                    newWvfs[0].loops = 1
-                    newWvfs[0].is_periodic = False
 
                     newGroups = []
                     for wvf in newWvfs:
-                        newGrp = waveform_group(wvf.time,wvf.duration,[wvf],loops=1)
+                        # Create new groups for each piece of the split waveform
+                        newGrp = waveform_group(wvf.time,wvf.duration,[wvf],loops=wvf.loops)
                         newGroups.append(newGrp)
 
-                    newGroups[0].loops = loops     # Only the middle group actually loops
+                        wvf.loops = 1
+                        wvf.is_periodic = False
+
                     result_groups.extend(newGroups)
 
             # ---------------------------------------------------------------------------
@@ -441,7 +466,7 @@ class SpectrumM4X6620(IntermediateDevice):
                 t_start = group.time
                 t_end = group.time + group.duration
 
-                newWvfs = split_periodic_waveforms(periodicWvfs, t_start, t_end)
+                newWvfs = self.split_periodic_waveforms(periodicWvfs, t_start, t_end)
 
                 # Add the pieces of the split waveform to the group
                 for wvf in newWvfs:
@@ -502,8 +527,8 @@ class SpectrumM4X6620Worker(Worker):
             self.card = spcm_hOpen("TCPIP::171.64.57.188::INSTR")  ### remote card mode only for testing purposes
         else:
             self.card = spcm_hOpen(create_string_buffer (b'/dev/spcm0'))
-        if self.card == None:
-            raise LabscriptError("Device is not connected.")
+#         if self.card == None:
+#             raise LabscriptError("Device is not connected.")
 
         self.bytesPerSample = 2
 
@@ -745,7 +770,7 @@ class SpectrumM4X6620Worker(Worker):
 
     def transition_to_buffered(self,device_name,h5file,initial_values,fresh):
         # return self.final_values
-        self.sample_groups = []
+        self.waveform_groups = []
         with h5py.File(h5file) as file:
             device = file['/devices/' +device_name]
 
@@ -758,25 +783,28 @@ class SpectrumM4X6620Worker(Worker):
             for i, channel in enumerate(ch_settings):
                 self.channels.append(channel_settings(channel['name'], channel['power'], channel['port']))
 
-            groups_folder = device['sample_groups']
+            groups_folder = device['waveform_groups']
 
             for groupname in groups_folder.iterkeys():
                 g = groups_folder[groupname]
                 gsettings = g['group_settings']
                 time = gsettings['time']
                 duration = gsettings['duration']
-                segments = []
+                loops = gsettings['loops']
+                waveforms = []
 
-                for segmt in g.iterkeys():
-                    if segmt != 'group_settings':
-                        seg = segment(0, 0, 0)
-                        s = g[segmt]
+                for wavename in g.iterkeys():
+                    if wavename != 'group_settings':
+                        wvf = waveform(0, 0, 0)
+                        s = g[wavename]
                         for p in s.iterkeys():
-                            if p == 'segment_settings':
-                                seg.time = s['segment_settings']['time'][0]
-                                seg.duration = s['segment_settings']['duration'][0]
-                                seg.loops = s['segment_settings']['loops'][0]
-                                seg.port = s['segment_settings']['port'][0]
+                            if p == 'waveform_settings':
+                                wvf.time = s['waveform_settings']['time'][0]
+                                wvf.duration = s['waveform_settings']['duration'][0]
+                                wvf.loops = s['waveform_settings']['loops'][0]
+                                wvf.port = s['waveform_settings']['port'][0]
+                                wvf.sample_start = s['waveform_settings']['sample_start'][0]
+                                wvf.sample_end = s['waveform_settings']['sample_end'][0]
                             if p == 'pulse_data':
                                 dset = s['pulse_data']
                                 ###### Figure out how to go through every line of the profile table.
@@ -786,20 +814,22 @@ class SpectrumM4X6620Worker(Worker):
                                     phase = dset['phase'][i]
                                     amplitude = dset['amp'][i]
                                     ramp_type = dset['ramp_type'][i]
-                                    seg.add_pulse(start_freq, end_freq, phase, amplitude,ramp_type)
-                        segments.append(seg)
+                                    wvf.add_pulse(start_freq, end_freq, phase, amplitude,ramp_type)
+                        waveforms.append(wvf)
 
-                self.sample_groups.append(sample_group(time,duration,segments))
+                self.waveform_groups.append(waveform_group(time,duration,waveforms,loops))
 
-            if len(self.sample_groups) == 0:
+            if len(self.waveform_groups) == 0:
                 raise LabscriptError("Did not find any sample groups. Either something is wrong, or you haven't instructed the Spectrum card to do anything.")
 
 
             # Sort groups in time order (just in case)
-            self.sample_groups = sorted(self.sample_groups, key=lambda k: k.time)
-#             fig, ax = plt.subplots(1)
-#             self.make_segment_rects(self.sample_groups, ax)
-#             plt.show()
+            self.waveform_groups = sorted(self.waveform_groups, key=lambda k: k.time)
+
+            # Plot graphic tool
+            fig, ax = plt.subplots(1)
+            self.make_segment_rects(self.waveform_groups, ax)
+            plt.show()
 
         buf_gen = self.generate_buffer()
         if buf_gen is True:
@@ -812,6 +842,7 @@ class SpectrumM4X6620Worker(Worker):
 
         return self.final_values ### NOT CURRENTLY USED FOR ANY INFO TO SEND TO GUI. NECESSARY TO WORK WITH BLACS.
 
+
     def make_segment_rects(self, sample_groups, ax):
 
         # Create list for all the error patches
@@ -820,31 +851,44 @@ class SpectrumM4X6620Worker(Worker):
 
         last_t = 0
 
+        time_conv = 64e-9     # Convert from sample chunks to seconds
+
         for i,group in enumerate(sample_groups):
-            group_rect = Rectangle((group.time, 0), group.duration, 4)
-            group_rects.append(group_rect)
 
-            ax.text(group.time + 0.5 * group.duration,-0.2, 'group ' + str(i),ha='center')
-            ax.axvline(group.time,color='k')
+            for k in range(group.loops):
+                group_rect = Rectangle(((group.time + k * group.duration)*time_conv, 0), group.duration*time_conv, 4)
+                group_rects.append(group_rect)
 
-            if group.time+group.duration > last_t:
-                last_t = group.time+group.duration
+                if k == 0:
+                    text = 'group ' + str(i)
+                    if group.loops > 1:
+                        text += (' (x' + str(group.loops) + ')')
+                    ax.text((group.time + (group.loops * group.duration * 0.5))*time_conv,-0.2,text,ha='center')
+                    ax.axvline((group.time + k * group.duration)*time_conv,color='k')
 
-            for j,segment in enumerate(group.segments):
-                segm_rect = Rectangle((segment.time, segment.port), segment.duration, 1)
-                segm_rects.append(segm_rect)
+                if group.time + (k+1) * group.duration > last_t:
+                    last_t = group.time + (k+1) * group.duration
 
-                ax.text(segment.time,segment.port+0.5, ' s' + str(j),ha='left')
+                for j,waveform in enumerate(group.waveforms):
+                    for m in range(waveform.loops):
+                        segm_rect = Rectangle(((waveform.time + k * group.duration + m * waveform.duration)*time_conv, waveform.port), waveform.duration*time_conv, 1)
+                        segm_rects.append(segm_rect)
+
+                        if k == 0 and m == 0:
+                            s_text = 's' + str(j)
+                            if waveform.loops > 1:
+                                s_text += (' (x' + str(waveform.loops) + ')')
+                            ax.text((waveform.time + (0.5 * waveform.loops * waveform.duration))*time_conv,waveform.port+0.5,s_text,ha='center')
 
         # Create patch collection with specified colour/alpha
         group_pc = PatchCollection(group_rects, facecolor='lightgray', alpha=1, edgecolor='gray')
-        segm_pc = PatchCollection(segm_rects, facecolor='r', alpha=0.5, edgecolor='None')
+        segm_pc = PatchCollection(segm_rects, facecolor='r', alpha=0.5, edgecolor='r')
 
         # Add collection to axes
         ax.add_collection(group_pc)
         ax.add_collection(segm_pc)
 
-        ax.set_xlim(0,last_t * 1.02)
+        ax.set_xlim(0,last_t * time_conv * 1.02)
         ax.set_ylim(-0.5,4.2)
 
         ax.set_yticks([0.5,1.5,2.5,3.5],minor=True)
@@ -854,6 +898,7 @@ class SpectrumM4X6620Worker(Worker):
 
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Channel')
+
 
     ### Other Functions, manual mode is not utilized for the spectrum instrumentation card. ###
     def abort_transition_to_buffered(self):
