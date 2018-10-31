@@ -259,8 +259,6 @@ class SpectrumM4X6620(IntermediateDevice):
 
         self.raw_waveforms = []
 
-        self.cur_id = 0
-
         if trigger:
             if 'device' in trigger and 'connection' in trigger:
                 self.triggerDO = DigitalOut(self.name+'_Trigger', trigger['device'], trigger['connection'])
@@ -270,7 +268,10 @@ class SpectrumM4X6620(IntermediateDevice):
             raise LabscriptError('No trigger specified for device ' + self.name)
 
     ## Sets up the channel_data structure that will be filled with the following function calls (single_freq,comb,sweep...).
-    def set_mode(self,mode_name, channels=[], clock_freq=500):
+    def set_mode(self, mode_name, channels=[], clock_freq=500, use_ext_clock=True, ext_clock_freq=10):
+        self.use_ext_clock = use_ext_clock
+        self.ext_clock_freq = MEGA(ext_clock_freq)
+
         if (len(channels) == 3 or len(channels) > 4):
             raise LabscriptError('SpectrumM4X6620 only supports 1, 2, or 4 channels. Please remove a channel or add a dummy channel')
 
@@ -342,10 +343,12 @@ class SpectrumM4X6620(IntermediateDevice):
         device = hdf5_file.create_group('/devices/' + self.name)
 
         # Store device settings
-        settings_dtypes = np.dtype([('mode', 'S10'),('clock_freq',np.float)])
-        settings_table = np.array((0,0),dtype=settings_dtypes)
+        settings_dtypes = np.dtype([('mode', 'S10'),('clock_freq',np.float),('use_ext_clock',np.int),('ext_clock_freq',np.float)])
+        settings_table = np.array((0,0,0,0),dtype=settings_dtypes)
         settings_table['mode'] = self.sample_data.mode
         settings_table['clock_freq'] = self.sample_data.clock_freq
+        settings_table['use_ext_clock'] = self.use_ext_clock
+        settings_table['ext_clock_freq'] = self.ext_clock_freq
         device.create_dataset('device_settings', data=settings_table)
 
         # Store channel settings
@@ -424,18 +427,48 @@ class SpectrumM4X6620(IntermediateDevice):
     def stop(self):
         self.check_channel_collisions(self.raw_waveforms)
 
-        periodicWvfs = filter(lambda k: k.is_periodic == True, self.raw_waveforms)
-        nonPeriodicWvfs = filter(lambda k: k.is_periodic == False, self.raw_waveforms)
+        if self.sample_data.mode == 'multi':
+            self.sample_data.waveform_groups = self.make_waveform_groups(self.raw_waveforms)
 
-        nonPeriodicWvfGroups = self.make_waveform_groups(nonPeriodicWvfs)
+            # Sort groups in time order (just in case)
+            self.sample_data.waveform_groups = sorted(self.sample_data.waveform_groups, key=lambda k: k.time)
 
-        self.sample_data.waveform_groups = self.combine_periodic_nonperiodic_groups(periodicWvfs, nonPeriodicWvfGroups)
+            max_dur = 0
+            for group in self.sample_data.waveform_groups:
+                if group.duration > max_dur:
+                    max_dur = group.duration
 
-        # Sort groups in time order (just in case)
-        self.sample_data.waveform_groups = sorted(self.sample_data.waveform_groups, key=lambda k: k.time)
+            # Fire the trigger at the appropriate times, and check that the timing works out
+            t_prev = float('-inf')
+            for group in self.sample_data.waveform_groups:
+                self.triggerDO.go_high(time_c_to_s(group.time, self.sample_data.clock_freq))
+                self.triggerDO.go_low(time_c_to_s(group.time, self.sample_data.clock_freq)+self.triggerDur)
 
-        self.triggerDO.go_high(0)
-        self.triggerDO.go_low(self.triggerDur)
+                if self.triggerDur >= time_c_to_s(group.duration, self.sample_data.clock_freq):
+                    raise LabscriptError("Trigger duration too long (i.e. longer than the sample group duration; might not be a problem depending on how the card interprets trigger edges)")
+
+                if group.time - t_prev < max_dur:
+                    raise LabscriptError("Maximum group length is larger than the separation between groups! This is an edge case that Greg hoped wouldn't crop up but apparently it has (see Cavity Lab wiki page on 9/25/2018).")
+
+                t_prev = group.time
+
+        elif self.sample_data.mode == 'sequence':
+            periodicWvfs = filter(lambda k: k.is_periodic == True, self.raw_waveforms)
+            nonPeriodicWvfs = filter(lambda k: k.is_periodic == False, self.raw_waveforms)
+
+            nonPeriodicWvfGroups = self.make_waveform_groups(nonPeriodicWvfs)
+
+            self.sample_data.waveform_groups = self.combine_periodic_nonperiodic_groups(periodicWvfs, nonPeriodicWvfGroups)
+
+            # Sort groups in time order (just in case)
+            self.sample_data.waveform_groups = sorted(self.sample_data.waveform_groups, key=lambda k: k.time)
+
+            # Initial trigger
+            self.triggerDO.go_high(0)
+            self.triggerDO.go_low(self.triggerDur)
+
+        else:
+            raise LabscriptError('Unrecognized mode.')
 
         return
 
@@ -690,6 +723,7 @@ class SpectrumM4X6620Worker(Worker):
         if self.card == None:
             raise LabscriptError("Device is not connected.")
 
+        self.samplesPerChunk = 32
         self.bytesPerSample = 2
 
 
@@ -699,8 +733,15 @@ class SpectrumM4X6620Worker(Worker):
 #         print(err_text)
 
         ## General settings -- mode specific settings are defined in transition_to_buffered
-        err=spcm_dwSetParam_i32(self.card, SPC_CLOCKMODE, SPC_CM_INTPLL)  # clock mode internal PLL
-        if err: raise LabscriptError("Error detected in settings: " + str(err))
+        if self.use_ext_clock == True:
+            err=spcm_dwSetParam_i32(self.card, SPC_CLOCKMODE, SPC_CM_EXTREFCLOCK)  # clock mode external PLL
+            if err: raise LabscriptError("Error detected in settings: " + str(err))
+            err=spcm_dwSetParam_i32(self.card, SPC_REFERENCECLOCK, self.ext_clock_freq)
+            if err: raise LabscriptError("Error detected in settings: " + str(err))
+        else:
+            err=spcm_dwSetParam_i32(self.card, SPC_CLOCKMODE, SPC_CM_INTPLL)  # clock mode internal PLL
+            if err: raise LabscriptError("Error detected in settings: " + str(err))
+
         err=spcm_dwSetParam_i32(self.card, SPC_SAMPLERATE, int32(self.clock_freq))
         if err: raise LabscriptError("Error detected in settings: " + str(err))
         err=spcm_dwSetParam_i32(self.card, SPC_TRIG_EXT1_MODE, SPC_TM_POS)
@@ -786,87 +827,74 @@ class SpectrumM4X6620Worker(Worker):
 
         #### MULTI MODE #### Each segment must be same size.
         if (self.mode == 'multi'):
-            raise LabscriptError("Mode not currently available.")
-# #             lSetChannels = int32 (0)
-# #             spcm_dwGetParam_i32 (self.card, SPC_CHCOUNT,     byref (lSetChannels))
-# #             print('num chs')
-# #             print(lSetChannels.value)
-# #             lBytesPerSample = int32 (0)
-# #             spcm_dwGetParam_i32 (self.card, SPC_MIINST_BYTESPERSAMPLE,  byref (lBytesPerSample))
-# #             print(lBytesPerSample.value)
-# #             lFeats = int32 (0)
-# #             spcm_dwGetParam_i32 (self.card, SPC_PCIFEATURES,  byref (lFeats))
-# #             print(lFeats.value)
 
-#             lStatus = int32 (0)
-#             spcm_dwGetParam_i32 (self.card, SPC_M2STATUS,  byref (lStatus))
-# #             print('STATUS------------------------------')
-# #             print(lStatus.value)
+            self.num_groups = len(self.waveform_groups)
+            max_samples = 0 ### For multimode, we must know the largest size segment, in order to make each segment the same size.
+            for group in self.waveform_groups:
+                num = group.duration * self.samplesPerChunk
+                if num > max_samples: max_samples = num
+            self.samples = int(max_samples)
 
+            if (self.samples % 32) != 0:
+                # raise LabscriptError("Number of samples must be a multiple of 32") # Not *strictly* necessary: see p.105 of Spectrum manual
+                print('Warning: number of samples must be a multiple of 32. Rounding up number of samples...')
+                self.samples += 32 - (self.samples % 32)
 
-#             self.num_groups = len(self.sample_groups)
-#             max_samples = 0 ### For multimode, we must know the largest size segment, in order to make each segment the same size.
-#             for group in self.sample_groups:
-#                 num = group.duration * self.clock_freq
-#                 if num > max_samples: max_samples = num
-#             self.samples = int(max_samples)
+            size = uint64(self.num_groups * self.num_chs * self.samples * self.bytesPerSample)
+            self.buffer = create_string_buffer(size.value)
+            print("Filling waveform...")
 
-#             if (self.samples % 32) != 0: raise LabscriptError("Number of samples must be a multiple of 32") # Not *strictly* necessary: see p.105 of Spectrum manual
-#             size = uint64(self.num_groups * self.num_chs * self.samples * self.bytesPerSample)
-#             self.buffer = create_string_buffer(size.value)
-#             print("Filling waveform...")
+            np_waveform = np.zeros(self.num_groups * self.num_chs * self.samples, dtype=int16)
 
-#             np_waveform = np.zeros(self.num_groups * self.num_chs * self.samples, dtype=int16)
+            for i,group in enumerate(self.waveform_groups):
 
-#             for i,group in enumerate(self.sample_groups):
+                for j,wvf in enumerate(group.waveforms):
 
-#                 for j in range(len(group.segments)):
-#                     seg = group.segments[j]
+                    wvfSamples = int(wvf.duration * self.samplesPerChunk)
+                    t = np.linspace(0, time_c_to_s(wvf.duration, self.clock_freq), wvfSamples)
 
-#                     segSamples = int(seg.duration * self.clock_freq)
-#                     t = np.linspace(0, seg.duration, segSamples)
+                    ramp = np.zeros(wvfSamples)
+                    for pulse in wvf.pulses:
+                        if pulse.ramp_type == "linear":
+                            ramp += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.end, method='linear', phi=pulse.phase)
+                        elif pulse.ramp_type == "quadratic":
+                            ramp += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.end, method='quadratic', phi=pulse.phase)
+                        else: ## If no allowed ramp is specified, then it is assumed that the frequency remains stationary.
+                            ramp += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.start, method='linear', phi=pulse.phase)
 
-#                     ramp = np.zeros(segSamples)
-#                     for pulse in seg.pulses:
-#                         if pulse.ramp_type == "linear":
-#                             ramp += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=seg.duration, f1=pulse.end, method='linear', phi=pulse.phase)
-#                         elif pulse.ramp_type == "quadratic":
-#                             ramp += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=seg.duration, f1=pulse.end, method='quadratic', phi=pulse.phase)
-#                         else: ## If no allowed ramp is specified, then it is assumed that the frequency remains stationary.
-#                             ramp += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=seg.duration, f1=pulse.start, method='linear', phi=pulse.phase)
+                    ramp = ramp.astype(int16)
 
-#                     ramp = ramp.astype(int16)
+                    groupOffs = int(i * self.samples * self.num_chs)
+                    wvfmOffs = int((wvf.time - group.time) * self.samplesPerChunk * self.num_chs)
+                    channelOffs = int(wvf.port)
+                    offset = groupOffs + wvfmOffs + channelOffs
 
-#                     groupOffs = int(i * self.samples * self.num_chs)
-#                     segmOffs = int((seg.time - group.time) * self.clock_freq * self.num_chs)
-#                     channelOffs = int(seg.port)
-#                     offset = groupOffs + segmOffs + channelOffs
-
-#                     begin = offset
-#                     end = offset + (len(ramp) * int(self.num_chs))
-#                     increment = int(self.num_chs)
-#                     np_waveform[begin:end:increment] = ramp
+                    begin = offset
+                    end = offset + (len(ramp) * int(self.num_chs))
+                    increment = int(self.num_chs)
+                    np_waveform[begin:end:increment] = ramp
 
 
-#             memmove(self.buffer, np_waveform.ctypes.data_as(ptr16), size.value)
+            memmove(self.buffer, np_waveform.ctypes.data_as(ptr16), size.value)
 
-# #             with open('X:\\dataDump.csv', 'w') as f:
-# #                 for i in range(0, self.num_groups * self.num_chs * self.samples):
-# #                     print >> f, np_waveform[i]
+#             with open('X:\\dataDump.csv', 'w') as f:
+#                 for i in range(0, self.num_groups * self.num_chs * self.samples):
+#                     print >> f, np_waveform[i]
 
-#             print("Waveform filled")
+            print("Waveform filled")
 
 
-#             ## Card settings specific to multimode
-# #             print(self.samples)
-# #             print(self.num_groups)
-# #             print(self.num_chs)
-#             err=spcm_dwSetParam_i32(self.card, SPC_MEMSIZE, self.samples * self.num_groups)
-#             if err: raise LabscriptError("Error detected in settings: " + str(err))
-#             err=spcm_dwSetParam_i32(self.card, SPC_SEGMENTSIZE, self.samples)
-#             if err: raise LabscriptError("Error detected in settings: " + str(err))
-#             err=spcm_dwSetParam_i32(self.card, SPC_LOOPS, 1)
-#             if err: raise LabscriptError("Error detected in settings: " + str(err))
+            ## Card settings specific to multimode
+#             print(self.samples)
+#             print(self.num_groups)
+#             print(self.num_chs)
+            err=spcm_dwSetParam_i32(self.card, SPC_MEMSIZE, self.samples * self.num_groups)
+            if err: raise LabscriptError("Error detected in settings: " + str(err))
+            err=spcm_dwSetParam_i32(self.card, SPC_SEGMENTSIZE, self.samples)
+            if err: raise LabscriptError("Error detected in settings: " + str(err))
+            err=spcm_dwSetParam_i32(self.card, SPC_LOOPS, 1)
+            if err: raise LabscriptError("Error detected in settings: " + str(err))
+
 
         #### SEQUENCE MODE ####
         elif (self.mode == 'sequence'):
@@ -959,7 +987,7 @@ class SpectrumM4X6620Worker(Worker):
             #         print(time_c_to_s(instr.loops * dummy_loop_dur,self.clock_freq))
 
 
-            samples_per_chunk = 32
+            samples_per_chunk = self.samplesPerChunk
             bytes_per_sample = self.bytesPerSample
 
             # Split memory into segments
@@ -1080,7 +1108,7 @@ class SpectrumM4X6620Worker(Worker):
         if self.mode == 'Off': return
 
         error = spcm_dwSetParam_i32(self.card, SPC_M2CMD, M2CMD_CARD_START | M2CMD_CARD_ENABLETRIGGER) # | M2CMD_CARD_WAITTRIGGER)
-        if error != 0: raise LabscriptError("Error detected during data transfer to card. Error: " + str(error))
+        if error != 0: raise LabscriptError("Error detected during card start. Error: " + str(error))
 
         print('Card started')
         # dwError = spcm_dwSetParam_i32(self.card, SPC_M2CMD, M2CMD_CARD_WAITREADY)
@@ -1104,6 +1132,8 @@ class SpectrumM4X6620Worker(Worker):
             settings = device['device_settings']
             self.mode = settings['mode']
             self.clock_freq = int(settings['clock_freq'])
+            self.use_ext_clock = bool(settings['use_ext_clock'])
+            self.ext_clock_freq = int(settings['ext_clock_freq'])
 
             ch_settings = device['channel_settings'][:]
             self.channels = []
