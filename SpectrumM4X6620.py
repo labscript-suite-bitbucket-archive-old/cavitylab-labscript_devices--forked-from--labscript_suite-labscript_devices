@@ -248,11 +248,11 @@ def draw_sequence_plot(waveform_groups, sequence_instrs, clock_freq, ax):
 
 
 @labscript_device
-class SpectrumM4X6620(IntermediateDevice):
+class SpectrumM4X6620(Device):
 
     def __init__(self,name,parent_device,trigger,triggerDur=100e-6):
-        IntermediateDevice.__init__(self,name,parent_device)
         self.BLACS_connection = 5
+        Device.__init__(self,name,parent_device,connection=self.BLACS_connection)
         self.set_mode('Off') ## Initialize data structure
 
         self.triggerDur = triggerDur
@@ -297,6 +297,8 @@ class SpectrumM4X6620(IntermediateDevice):
     # Function that allows user to initialize a waveform.
     def sweep_comb(self, t, duration, start_freqs, end_freqs, amplitudes, phases, ch, ramp_type, loops=1):
 
+        if self.sample_data.mode == 'Off':
+            raise LabscriptError('Card has not been properly initialized. Please call set_mode() first.')
         if t < 0:
             raise LabscriptError('Time t cannot be negative')
         if duration <= 0:
@@ -428,6 +430,8 @@ class SpectrumM4X6620(IntermediateDevice):
         self.check_channel_collisions(self.raw_waveforms)
 
         if self.sample_data.mode == 'multi':
+            print('SpectrumM4X card is in multi mode')
+
             self.sample_data.waveform_groups = self.make_waveform_groups(self.raw_waveforms)
 
             # Sort groups in time order (just in case)
@@ -453,6 +457,8 @@ class SpectrumM4X6620(IntermediateDevice):
                 t_prev = group.time
 
         elif self.sample_data.mode == 'sequence':
+            print('SpectrumM4X card is in sequence mode')
+
             periodicWvfs = filter(lambda k: k.is_periodic == True, self.raw_waveforms)
             nonPeriodicWvfs = filter(lambda k: k.is_periodic == False, self.raw_waveforms)
 
@@ -466,6 +472,9 @@ class SpectrumM4X6620(IntermediateDevice):
             # Initial trigger
             self.triggerDO.go_high(0)
             self.triggerDO.go_low(self.triggerDur)
+
+        elif self.sample_data.mode == 'Off':
+            print('SpectrumM4X card is OFF')
 
         else:
             raise LabscriptError('Unrecognized mode.')
@@ -715,7 +724,7 @@ class SpectrumM4X6620Tab(DeviceTab):
 class SpectrumM4X6620Worker(Worker):
     def init(self):
         self.final_values = {'channel 0' : {}}
-        self.remote = True
+        self.remote = False
         if self.remote:
             self.card = spcm_hOpen("TCPIP::171.64.58.213::INSTR")  ### remote card mode only for testing purposes
         else:
@@ -828,72 +837,74 @@ class SpectrumM4X6620Worker(Worker):
         #### MULTI MODE #### Each segment must be same size.
         if (self.mode == 'multi'):
 
-            self.num_groups = len(self.waveform_groups)
-            max_samples = 0 ### For multimode, we must know the largest size segment, in order to make each segment the same size.
-            for group in self.waveform_groups:
-                num = group.duration * self.samplesPerChunk
-                if num > max_samples: max_samples = num
-            self.samples = int(max_samples)
+            raise LabscriptError("Mode not currently available.")
 
-            if (self.samples % 32) != 0:
-                # raise LabscriptError("Number of samples must be a multiple of 32") # Not *strictly* necessary: see p.105 of Spectrum manual
-                print('Warning: number of samples must be a multiple of 32. Rounding up number of samples...')
-                self.samples += 32 - (self.samples % 32)
-
-            size = uint64(self.num_groups * self.num_chs * self.samples * self.bytesPerSample)
-            self.buffer = create_string_buffer(size.value)
-            print("Filling waveform...")
-
-            np_waveform = np.zeros(self.num_groups * self.num_chs * self.samples, dtype=int16)
-
-            for i,group in enumerate(self.waveform_groups):
-
-                for j,wvf in enumerate(group.waveforms):
-
-                    wvfSamples = int(wvf.duration * self.samplesPerChunk)
-                    t = np.linspace(0, time_c_to_s(wvf.duration, self.clock_freq), wvfSamples)
-
-                    ramp = np.zeros(wvfSamples)
-                    for pulse in wvf.pulses:
-                        if pulse.ramp_type == "linear":
-                            ramp += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.end, method='linear', phi=pulse.phase)
-                        elif pulse.ramp_type == "quadratic":
-                            ramp += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.end, method='quadratic', phi=pulse.phase)
-                        else: ## If no allowed ramp is specified, then it is assumed that the frequency remains stationary.
-                            ramp += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.start, method='linear', phi=pulse.phase)
-
-                    ramp = ramp.astype(int16)
-
-                    groupOffs = int(i * self.samples * self.num_chs)
-                    wvfmOffs = int((wvf.time - group.time) * self.samplesPerChunk * self.num_chs)
-                    channelOffs = int(wvf.port)
-                    offset = groupOffs + wvfmOffs + channelOffs
-
-                    begin = offset
-                    end = offset + (len(ramp) * int(self.num_chs))
-                    increment = int(self.num_chs)
-                    np_waveform[begin:end:increment] = ramp
-
-
-            memmove(self.buffer, np_waveform.ctypes.data_as(ptr16), size.value)
-
-#             with open('X:\\dataDump.csv', 'w') as f:
-#                 for i in range(0, self.num_groups * self.num_chs * self.samples):
-#                     print >> f, np_waveform[i]
-
-            print("Waveform filled")
-
-
-            ## Card settings specific to multimode
-#             print(self.samples)
-#             print(self.num_groups)
-#             print(self.num_chs)
-            err=spcm_dwSetParam_i32(self.card, SPC_MEMSIZE, self.samples * self.num_groups)
-            if err: raise LabscriptError("Error detected in settings: " + str(err))
-            err=spcm_dwSetParam_i32(self.card, SPC_SEGMENTSIZE, self.samples)
-            if err: raise LabscriptError("Error detected in settings: " + str(err))
-            err=spcm_dwSetParam_i32(self.card, SPC_LOOPS, 1)
-            if err: raise LabscriptError("Error detected in settings: " + str(err))
+#             self.num_groups = len(self.waveform_groups)
+#             max_samples = 0 ### For multimode, we must know the largest size segment, in order to make each segment the same size.
+#             for group in self.waveform_groups:
+#                 num = group.duration * self.samplesPerChunk
+#                 if num > max_samples: max_samples = num
+#             self.samples = int(max_samples)
+#
+#             if (self.samples % 32) != 0:
+#                 # raise LabscriptError("Number of samples must be a multiple of 32") # Not *strictly* necessary: see p.105 of Spectrum manual
+#                 print('Warning: number of samples must be a multiple of 32. Rounding up number of samples...')
+#                 self.samples += 32 - (self.samples % 32)
+#
+#             size = uint64(self.num_groups * self.num_chs * self.samples * self.bytesPerSample)
+#             self.buffer = create_string_buffer(size.value)
+#             print("Filling waveform...")
+#
+#             np_waveform = np.zeros(self.num_groups * self.num_chs * self.samples, dtype=int16)
+#
+#             for i,group in enumerate(self.waveform_groups):
+#
+#                 for j,wvf in enumerate(group.waveforms):
+#
+#                     wvfSamples = int(wvf.duration * self.samplesPerChunk)
+#                     t = np.linspace(0, time_c_to_s(wvf.duration, self.clock_freq), wvfSamples)
+#
+#                     ramp = np.zeros(wvfSamples)
+#                     for pulse in wvf.pulses:
+#                         if pulse.ramp_type == "linear":
+#                             ramp += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.end, method='linear', phi=pulse.phase)
+#                         elif pulse.ramp_type == "quadratic":
+#                             ramp += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.end, method='quadratic', phi=pulse.phase)
+#                         else: ## If no allowed ramp is specified, then it is assumed that the frequency remains stationary.
+#                             ramp += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.start, method='linear', phi=pulse.phase)
+#
+#                     ramp = ramp.astype(int16)
+#
+#                     groupOffs = int(i * self.samples * self.num_chs)
+#                     wvfmOffs = int((wvf.time - group.time) * self.samplesPerChunk * self.num_chs)
+#                     channelOffs = int(wvf.port)
+#                     offset = groupOffs + wvfmOffs + channelOffs
+#
+#                     begin = offset
+#                     end = offset + (len(ramp) * int(self.num_chs))
+#                     increment = int(self.num_chs)
+#                     np_waveform[begin:end:increment] = ramp
+#
+#
+#             memmove(self.buffer, np_waveform.ctypes.data_as(ptr16), size.value)
+#
+# #             with open('X:\\dataDump.csv', 'w') as f:
+# #                 for i in range(0, self.num_groups * self.num_chs * self.samples):
+# #                     print >> f, np_waveform[i]
+#
+#             print("Waveform filled")
+#
+#
+#             ## Card settings specific to multimode
+# #             print(self.samples)
+# #             print(self.num_groups)
+# #             print(self.num_chs)
+#             err=spcm_dwSetParam_i32(self.card, SPC_MEMSIZE, self.samples * self.num_groups)
+#             if err: raise LabscriptError("Error detected in settings: " + str(err))
+#             err=spcm_dwSetParam_i32(self.card, SPC_SEGMENTSIZE, self.samples)
+#             if err: raise LabscriptError("Error detected in settings: " + str(err))
+#             err=spcm_dwSetParam_i32(self.card, SPC_LOOPS, 1)
+#             if err: raise LabscriptError("Error detected in settings: " + str(err))
 
 
         #### SEQUENCE MODE ####
@@ -1184,10 +1195,10 @@ class SpectrumM4X6620Worker(Worker):
             # Sort groups in time order (just in case)
             self.waveform_groups = sorted(self.waveform_groups, key=lambda k: k.time)
 
-            # Plot graphic tool
-            fig, ax = plt.subplots(1)
-            draw_waveform_groups(self.waveform_groups, self.clock_freq, ax)
-            plt.show()
+            # # Plot graphic tool
+            # fig, ax = plt.subplots(1)
+            # draw_waveform_groups(self.waveform_groups, self.clock_freq, ax)
+            # plt.show()
 
         ### Card Settings ###
         self.card_settings()
