@@ -291,6 +291,30 @@ class SpectrumM4X6620(Device):
     def sweep(self, t, duration, start_freq, end_freq, amplitude, phase, ch, ramp_type, loops=1):
         self.sweep_comb(t, duration, [start_freq], [end_freq], [amplitude], [phase], ch, ramp_type, loops)
 
+    # def staircase_sweep(self, t, duration, steps, start_freq, end_freq, amplitude, phase, ch, ramp_type, loops=1):
+    #     if loops > 1:
+    #         raise LabscriptError("discrete_sweep() does not (yet) support multiple loops. Please set loops=1")
+    #     if self.sample_data.mode == 'Off':
+    #         raise LabscriptError('Card has not been properly initialized. Please call set_mode() first.')
+    #
+    #     min_seg_dur = float(...
+    #     )
+    #
+    #     freqs = np.linspace(start_freq, end_freq, steps)
+    #     times = np.linspace(t, t+duration, steps)
+    #     single_dur = float(float(duration) / float(steps))
+    #
+    #     for time,freq in zip(times, freqs):
+    #         period = float(1.0 / freq)
+    #         min_periodic_dur = float(math.ceil(min_seg_dur / period) * period)
+    #         num_loops = int(math.floor((single_dur - min_seg_dur) / min_periodic_dur))
+    #
+    #         single_freq(self, time, min_periodic_dur, freq, amplitude, phase, ch, loops=num_loops)
+    #
+    #         t_leftover = time + min_periodic_dur*num_loops
+    #         dur_leftover = single_dur - (t_leftover - time)
+    #         single_freq(self, t_leftover, dur_leftover, freq, amplitude, phase, ch, loops=1)
+
     def comb(self,t,duration,freqs,amplitudes,phases,ch,loops=1):
         self.sweep_comb(t,duration,freqs,freqs,amplitudes,phases,ch,'None',loops)
 
