@@ -289,7 +289,11 @@ class SpectrumM4X6620(Device):
         self.sweep_comb(t, duration, [freq], [freq], [amplitude], [phase], ch, 'None', loops)
 
     def sweep(self, t, duration, start_freq, end_freq, amplitude, phase, ch, ramp_type, loops=1):
-        self.sweep_comb(t, duration, [start_freq], [end_freq], [amplitude], [phase], ch, ramp_type, loops)
+        if type(start_freq) in [list, np.ndarray]:
+            nfreq = len(start_freq)
+            self.sweep_comb(t, duration, start_freq, end_freq, [amplitude] * nfreq, [phase] * nfreq, ch, ramp_type, loops)
+        else:
+            self.sweep_comb(t, duration, [start_freq], [end_freq], [amplitude], [phase], ch, ramp_type, loops)
 
     # def staircase_sweep(self, t, duration, steps, start_freq, end_freq, amplitude, phase, ch, ramp_type, loops=1):
     #     if loops > 1:
@@ -348,7 +352,8 @@ class SpectrumM4X6620(Device):
                 raise LabscriptError("Amplitude[" + str(i) + "] = " + str(amplitudes[i]) + " is outside the allowed range [0,1]")
 
             wvf.add_pulse(start_freqs[i],end_freqs[i],duration,phases[i],amplitudes[i],ramp_type)
-            self.raw_waveforms.append(wvf)
+
+        self.raw_waveforms.append(wvf)
 
         return t+(loops*duration)
 
@@ -572,6 +577,12 @@ class SpectrumM4X6620(Device):
             wvfsPerPort = filter(lambda k: k.port == port, waveforms)
 
             groupsPerPort = self.make_waveform_groups(wvfsPerPort)
+
+            # # Plot graphic tool
+            # fig, ax = plt.subplots(1)
+            # draw_waveform_groups(groupsPerPort, self.sample_data.clock_freq, ax)
+            # plt.show()
+
             for i in range(0,len(groupsPerPort)):
                 if len(groupsPerPort[i].waveforms) > 1:
                     raise LabscriptError("Port collision: you've instructed port " + str(port) + " to play two waveforms at once")
@@ -827,8 +838,8 @@ class SpectrumM4X6620Worker(Worker):
 
             ## Setting amplitude corresponding to chosen power.
             amplitude = int(np.sqrt(0.1) * 10 ** (float(channel.power) / 20.0) * 1000)
-            if amplitude < 80: raise LabscriptError("Power below acceptable range. Min power = -23.9 dBm")
-            if amplitude > 2500: raise LabscriptError("Power above acceptable range. Max power = 5.9 dBm.")
+            if amplitude < 80: raise LabscriptError("Power below acceptable range. Min power = -11.94 dBm")
+            if amplitude > 2500: raise LabscriptError("Power above acceptable range. Max power = 17.95 dBm.")
             if channel.port == 0:
                 channel_enable_word |= CHANNEL0
                 err=spcm_dwSetParam_i32(self.card, SPC_AMP0, int32(amplitude))
