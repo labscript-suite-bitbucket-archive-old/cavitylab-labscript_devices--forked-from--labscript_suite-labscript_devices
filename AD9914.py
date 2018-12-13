@@ -136,9 +136,9 @@ class AD9914Tab(DeviceTab):
 
         # # Store the COM port to be used   !!!
         # self.com_port = str(self.settings['connection_table'].find_by_name(self.device_name).BLACS_connection)
-        
+
         self.instance = int(self.settings['connection_table'].find_by_name(self.device_name).BLACS_connection)
-        
+
         #
         # Create and set the primary worker
         self.create_worker("main_worker", AD9914Worker,{'instance':self.instance})
@@ -205,7 +205,7 @@ class AD9914Worker(Worker):
         # Hack - must always restart device on first startup
         if self.ReadRegister(0) != reg0:
             raise LabscriptError("Registers did not reset correctly - please restart the device")
-            
+
 
         # for addr in range(18):
         #     print repr(self.ReadRegister(addr))
@@ -331,13 +331,13 @@ class AD9914Worker(Worker):
 
     def IOUpdate (self):
         # Pushes instructions from the buffer into the actual DDS register (must do this in order for the DDS to actually update its signal)
-        
+
         self.SetPortValue(1, 0xF8)
         time.sleep(0.1)
         self.SetPortValue(1, 0xF0)
         time.sleep(0.1)
-        
-        
+
+
     def CalcFTW (self, fout):   # fout in MHz
         fout = fout * 1e6   # convert from MHz to Hz
         FTWint = round(2**32 * (fout / self.clk))
@@ -406,8 +406,8 @@ class AD9914Worker(Worker):
             self.program_static('profile %i'%profile, 'freq', 13)   # Arbitrary frequency
             self.program_static('profile %i'%profile, 'amp', 1)
             self.program_static('profile %i'%profile, 'phase', 0)
-        
-        
+
+
         reg0 = self.ReadRegister(0)
         reg0[1] |= 0x10         # Clear accumulator
         self.WriteRegister(0, reg0, True)
@@ -426,7 +426,7 @@ class AD9914Worker(Worker):
 
         stepSize_rise = (high - low) * dt / risetime
         stepSize_fall = (high - low) * dt / falltime
-        
+
 #        print "Step sizes!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
 #        print stepSize_rise
 #        print stepSize_fall
@@ -475,7 +475,7 @@ class AD9914Worker(Worker):
         self.WriteRegister(8, dt_reg)
 
         self.IOUpdate()
-        
+
     def DumpRegisters(self, filename=None):
         if filename:
             text_file = open(filename, "w")
@@ -573,7 +573,7 @@ class AD9914Worker(Worker):
             reg1 = self.ReadRegister(1)
             reg1[2] &= ~0x08         # Disable digital ramp
             self.WriteRegister(1, reg1)
-        
+
             data = profile_data
             if fresh or data != self.smart_cache['PROFILE_DATA']:
 #                self.logger.debug('Static data has changed, reprogramming.')
@@ -596,7 +596,7 @@ class AD9914Worker(Worker):
 
         if sweep_data is not None:
             self.SetUpSweep(sweep_data['sweep_type'], sweep_data['sweep_low'], sweep_data['sweep_high'], sweep_data['sweep_risetime'], sweep_data['sweep_falltime'], sweep_data['sweep_dt'])
-    
+
         return self.final_values
 
     def abort_transition_to_buffered(self):
@@ -606,7 +606,7 @@ class AD9914Worker(Worker):
         return self.transition_to_manual(True)
 
     def transition_to_manual(self,abort = False):
-        
+
         if abort:
             # If we're aborting the run, then we need to reset the Static DDSs to their initial values.
             # We also need to invalidate the smart programming cache.
@@ -624,6 +624,3 @@ class AD9914Worker(Worker):
 
     def shutdown(self):
         return
-
-
-
