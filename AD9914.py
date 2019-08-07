@@ -521,6 +521,7 @@ class AD9914Worker(Worker):
         if type == 'freq':
             addr = 11 + 2 * profile
             self.WriteRegister(addr, self.CalcFTW(value))
+            self.WriteRegister(addr, self.CalcFTW(value))
 
         elif type == 'phase':
             addr = 12 + 2 * profile
@@ -531,6 +532,7 @@ class AD9914Worker(Worker):
             regVal[1] = phaseVal[1]
 
             self.WriteRegister(addr, regVal)
+            self.WriteRegister(addr, regVal)
 
         elif type == 'amp':
             addr = 12 + 2 * profile
@@ -540,6 +542,7 @@ class AD9914Worker(Worker):
             regVal[2] = ampVal[0]
             regVal[3] = ampVal[1]
 
+            self.WriteRegister(addr, regVal)
             self.WriteRegister(addr, regVal)
         else:
             raise LabscriptError("Unrecognized DDS sub-profile type")
