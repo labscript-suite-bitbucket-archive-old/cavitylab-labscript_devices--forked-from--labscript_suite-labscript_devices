@@ -288,7 +288,6 @@ class PineblasterWorker(Worker):
                 response = self.pineblaster.readline()
                 assert response == 'ok\r\n', 'PineBlaster said \'%s\', expected \'ok\''%repr(response)
                 self.smart_cache[i] = instruction
-
         if not self.is_master_pseudoclock:
             # Get ready for a hardware trigger:
             self.pineblaster.write('hwstart\r\n')

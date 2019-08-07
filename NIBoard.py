@@ -219,4 +219,3 @@ class RunviewerClass(object):
                 add_trace(channel_name, traces[channel.parent_port], self.name, channel.parent_port)
 
         return triggers
-
