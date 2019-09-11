@@ -1094,27 +1094,27 @@ class SpectrumM4X6620Worker(Worker):
                         for pulse in wvf.pulses:
                             if pulse.ramp_type in ["linear", "quadratic"]:
                                 get_pulse_index = lambda x: int(x * len(t)/(pulse.ramp_time))
-                                if wvf.port == 0 and pulse.keyword=="adiabatic": #Microwaves
-                                    ramp_time_index = get_pulse_index(self.SP_A_uWaveSweepDuration)
-                                    hold_time_index = get_pulse_index(self.SP_A_uWaveHoldTime) + ramp_time_index
-                                    ramp_off_time_index = get_pulse_index(self.SP_A_uWaveRampOffDur) + hold_time_index
-                                    freq_slope = 1e6 * (self.SP_A_uWaveStopFreq - self.SP_A_uWaveStartFreq)/self.SP_A_uWaveSweepDuration
-                                    end_phase = freq_slope * self.SP_A_uWaveSweepDuration**2/2 + 1e6*self.SP_A_uWaveStartFreq * self.SP_A_uWaveSweepDuration
-                                    end_phase = (end_phase * 360)
-                                    c1 = chirp(t[:ramp_time_index], f0=pulse.start,
-                                                                    t1=self.SP_A_uWaveSweepDuration if self.SP_A_uWaveSweepDuration > 0 else 1,
-                                                                    f1=pulse.end,
-                                                                    method='linear',
-                                                                    phi = 0)
-                                    t2 = t[ramp_time_index:]-self.SP_A_uWaveSweepDuration
-                                    c2 = chirp(t2, f0=pulse.end,
-                                                   t1= pulse.ramp_time,
-                                                   f1=pulse.end,
-                                                   method='linear',
-                                                   phi=end_phase)
-                                    print(c1.shape, c2.shape)
-                                    pulse_data += pulse.amp * (2**15-1) * np.concatenate([c1, c2])
-                                elif wvf.port == 1: #tweezer freq/amp
+                                # if wvf.port == 0 and pulse.keyword=="adiabatic": #Microwaves
+                                #     ramp_time_index = get_pulse_index(self.SP_A_uWaveSweepDuration)
+                                #     hold_time_index = get_pulse_index(self.SP_A_uWaveHoldTime) + ramp_time_index
+                                #     ramp_off_time_index = get_pulse_index(self.SP_A_uWaveRampOffDur) + hold_time_index
+                                #     freq_slope = 1e6 * (self.SP_A_uWaveStopFreq - self.SP_A_uWaveStartFreq)/self.SP_A_uWaveSweepDuration
+                                #     end_phase = freq_slope * self.SP_A_uWaveSweepDuration**2/2 + 1e6*self.SP_A_uWaveStartFreq * self.SP_A_uWaveSweepDuration
+                                #     end_phase = (end_phase * 360)
+                                #     c1 = chirp(t[:ramp_time_index], f0=pulse.start,
+                                #                                     t1=self.SP_A_uWaveSweepDuration if self.SP_A_uWaveSweepDuration > 0 else 1,
+                                #                                     f1=pulse.end,
+                                #                                     method='linear',
+                                #                                     phi = 0)
+                                #     t2 = t[ramp_time_index:]-self.SP_A_uWaveSweepDuration
+                                #     c2 = chirp(t2, f0=pulse.end,
+                                #                    t1= pulse.ramp_time,
+                                #                    f1=pulse.end,
+                                #                    method='linear',
+                                #                    phi=end_phase)
+                                #     print(c1.shape, c2.shape)
+                                #     pulse_data += pulse.amp * (2**15-1) * np.concatenate([c1, c2])
+                                if wvf.port == 1: #tweezer freq/amp
                                     amp_interp = pulse.amp
                                     pulse_data += amp_interp * (2**15-1) * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.end, method='linear', phi=pulse.phase)
                                 elif wvf.port == 3: #Raman freq/amp
@@ -1179,8 +1179,15 @@ class SpectrumM4X6620Worker(Worker):
                                 else:
                                     pulse_data += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.end, method=pulse.ramp_type, phi=pulse.phase)
                             else: ## If no allowed ramp is specified, then it is assumed that the frequency remains stationary.
+                                get_pulse_index = lambda x: int(x * len(t)/(pulse.ramp_time))
+
+                                if wvf.port == 0 and pulse.keyword = "adiabatic":
+                                    uwave_ramp_end_index = get_pulse_index(self.SP_A_uWaveRampDuration)
+                                    uwave_amp_ramp = pulse.amp * (2**15-1) * np.linspace(0, 1, len(t[:uwave_ramp_end_index]))
+                                    uwave_amp_hold = pulse.amp * (2**15-1) * np.linspace(1, 1, len(t[uwave_ramp_end_index:]))
+                                    uwave_amp = np.concatenate([uwave_amp_ramp, uwave_amp_hold])
+                                    pulse_data += uwave_amp * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.end, method='linear', phi=pulse.phase)
                                 if wvf.port == 2: #probe adiabatic sweep
-                                    get_pulse_index = lambda x: int(x * len(t)/(pulse.ramp_time))
                                     if self.PR_Cavity_Ramp:
                                         pr_ramp_end_index = get_pulse_index(self.PR_RampDuration)
                                         pr_amp_ramp = pulse.amp * (2**15-1) * np.linspace(0, 1, len(t[:pr_ramp_end_index]))
@@ -1335,9 +1342,7 @@ class SpectrumM4X6620Worker(Worker):
             self.SP_A_RamseyPulseFreq = globals.attrs['SP_A_RamseyPulseFreq']
             self.SP_A_RamseyPulsePhase = globals.attrs['SP_A_RamseyPulsePhase']
 
-            self.SP_A_uWaveStartFreq = globals.attrs['SP_A_uWaveStartFreq']
-            self.SP_A_uWaveStopFreq = globals.attrs['SP_A_uWaveStopFreq']
-            self.SP_A_uWaveSweepDuration = globals.attrs['SP_A_uWaveSweepDuration']
+            self.SP_A_uWaveRampDuration = globals.attrs['SP_A_uWaveRampDuration']
             self.SP_A_uWaveHoldTime = globals.attrs['SP_A_uWaveHoldTime']
             self.SP_A_uWaveRampOffDur = globals.attrs['SP_A_uWaveRampOffDur']
 
