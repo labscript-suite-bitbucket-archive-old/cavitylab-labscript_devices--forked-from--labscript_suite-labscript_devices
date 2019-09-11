@@ -395,7 +395,8 @@ class SpectrumM4X6620(Device):
                 raise LabscriptError("Amplitude[" + str(i) + "] = " + str(amplitudes[i]) + " is outside the allowed range [0,1]")
 
             wvf.add_pulse(start_freqs[i],end_freqs[i],duration,phases[i],amplitudes[i],ramp_type)
-
+        if ch == 2:
+            print(wvf)
         self.raw_waveforms.append(wvf)
 
         return t+(loops*duration)
@@ -1094,54 +1095,28 @@ class SpectrumM4X6620Worker(Worker):
                 pBuffer = create_string_buffer(buffer_size)
 
                 np_waveform = np.zeros(self.num_chs * group.duration * samples_per_chunk, dtype=int16)
+
                 # Fill buffer
                 if group.waveforms != 'dummy':
 
                     for wvf in group.waveforms:
                         dur = wvf.sample_end - wvf.sample_start
 
-                        pulse_data = np.zeros(dur * samples_per_chunk)
+                        pulse_data = np.zeros(dur * samples_per_chunk) #should this be a multiple of self.chs?
                         #raise LabscriptError("Error detected in settings: LOL")
                         t = np.linspace(time_c_to_s(wvf.sample_start, self.clock_freq), time_c_to_s(wvf.sample_end, self.clock_freq), dur * samples_per_chunk)
                         ###pixel: AOD input in dbm
                         left = 29
-                        amp_dic = {450: 31,
-                                   425: 31,
-                                   400: 31,
-                                   375: 31,
-                                   350: 31,
-                                   325: 31,
-                                   300: 31,
-                                   275: 31,
-                                   250: 28,
-                                   225: 28,
-                                   200: 28,
-                                   175: 28,
-                                   150: 28,
-                                   125: 28,
-                                   100: 28,
-                                   75: 28}
                         today_date = date.today()
-                        # fpd = "X:\\Schleier Lab Dropbox\\Cavity Lab Data\\" + str(today_date)[0:4] + "\\" + \
-                        #     str(today_date)[0:7] + "\\" + str(today_date) + "\\"
-                        # timestamp = time.strftime('%H%M%S')
-                        # with open(fpd + "AmpMod_%s.json" % timestamp, 'w') as fp:
-                        #     json.dump(amp_dic, fp, indent = 4)
-                        #amp = np.array([25,24.5,24,25,23.5,23.7,24,25,25.7,26.4,27.8,29,31])
-                        amp = [value for (key, value) in sorted(amp_dic.items(), reverse = True)]
-                        amp = tweezerAmplitude(amp, 1)
-                        amp_interp = np.interp(np.linspace(0, 1, len(t)), np.linspace(0, 1, len(amp)), amp)
                         for pulse in wvf.pulses:
                             if pulse.ramp_type == "linear":
+                                get_pulse_index = lambda x: int(x * len(t)/(pulse.ramp_time))
                                 if wvf.port == 1: #tweezer freq/amp
                                     amp_interp = pulse.amp
                                     pulse_data += amp_interp * (2**15-1) * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.end, method='linear', phi=pulse.phase)
-                                    # pulse_data += amp_interp * (2**15-1) * np.concatenate([chirp(t[0:ind1], f0=pulse.start, t1=pulse.ramp_time, f1=pulse.end, method='linear', phi=0),
-                                    #                                        chirp(t[ind1:ind2], f0=pulse.start, t1=pulse.ramp_time, f1=pulse.end, method='linear', phi=90),
-                                    #                                        chirp(t[ind2:len(t)], f0=pulse.start, t1=pulse.ramp_time, f1=pulse.end, method='linear', phi=0)])#chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.end, method='linear', phi=pulse.phase)
                                 elif wvf.port == 3: #Raman freq/amp
+                                    # get_pulse_index = lambda x: int(x * len(t)/(pulse.ramp_time))
                                     if self.SP_UseBigRaman:
-                                        get_pulse_index = lambda x: int(x * len(t)/(pulse.ramp_time))
                                         tweezer_time_index = get_pulse_index(self.StatePrepTotalDuration)
                                         sp_pi_pulse_index = get_pulse_index(self.SP_PiPulseDuration) + tweezer_time_index
                                         ramsey_wait_time_index = get_pulse_index(self.SP_RamseyWaitTime)
@@ -1159,14 +1134,30 @@ class SpectrumM4X6620Worker(Worker):
                                         c_ramsey = chirp(t[sp_se_pulse_index:], f0=pulse.start, t1=real_ramp_time, f1=pulse.end, method='linear', phi=self.SP_RamseyPulsePhase)
                                         print(pulse_data.shape, c1.shape, c2.shape, c3.shape, c_pi.shape, c_spinecho.shape, c_ramsey.shape)
                                         pulse_data += pulse.amp * (2**15-1) * np.concatenate([c1, c2, c3, c_pi, c_spinecho, c_ramsey])
-                                    else:
+                                    elif self.SP_A_DoRamps:
+                                        ramp_time_index = get_pulse_index(self.SP_A_RamanSweepDuration)
+                                        hold_time_index = get_pulse_index(self.SP_A_RamanHoldTime) + ramp_time_index
+                                        ramp_off_time_index = get_pulse_index(self.SP_A_RamanRampOffDur) + hold_time_index
+                                        ramsey_time_index = get_pulse_index(self.SP_A_RamseyPulseTime) + ramp_off_time_index
+                                        freq_slope = 1e6 * (self.SP_A_RamanStopFreq - self.SP_A_RamanStartFreq)/self.SP_A_RamanSweepDuration
+                                        end_phase = freq_slope * self.SP_A_RamanSweepDuration**2/2 + 1e6*self.SP_A_RamanStartFreq * self.SP_A_RamanSweepDuration
+                                        end_phase = (end_phase * 360)
+                                        c1 = chirp(t[:ramp_time_index], f0=pulse.start, t1=self.SP_A_RamanSweepDuration if self.SP_A_RamanSweepDuration > 0 else 1, f1=pulse.end, method='linear', phi = 0)
+                                        t2 = t[ramp_time_index:ramp_off_time_index]-self.SP_A_RamanSweepDuration
+                                        c2 = chirp(t2, f0=pulse.end, t1= pulse.ramp_time, f1=pulse.end, method='linear', phi=end_phase)
+                                        cr = chirp(t[ramp_off_time_index:], f0 = MEGA(self.SP_A_RamseyPulseFreq), t1 = pulse.ramp_time, f1 = MEGA(self.SP_A_RamseyPulseFreq), method = "linear", phi = self.SP_A_RamseyPulsePhase)
+                                        print(c1.shape, c2.shape, cr.shape)
+                                        pulse_data += pulse.amp * (2**15-1) * np.concatenate([c1, c2, cr])
+                                        #
+                                        # self.SP_A_RamanStartFreq = globals.attrs['SP_A_RamanStartFreq']
+                                        # self.SP_A_RamanStopFreq = globals.attrs['SP_A_RamanStopFreq']
+                                        # self.SP_A_RamanSweepDuration = globals.attrs['SP_A_RamanSweepDuration']
+                                        # self.SP_A_RamanHoldTime = globals.attrs['SP_A_RamanHoldTime']
+                                        # self.SP_A_DoRamps = globals.attrs['SP_A_DoRamps']
+                                    else: # Ramsey and spin echo with just tweezer
                                         wait_time = self.ramsey_wait_time
                                         half_pi_index = int(self.StatePrepTotalDuration * len(t)/(pulse.ramp_time))
                                         pulse2_index = int(self.StatePrepPulse2Duration * len(t)/(pulse.ramp_time))
-                                        # half_pi_index = int((pulse.ramp_time - 2 *wait_time-self.StatePrepRamseyDuration-self.StatePrepSpinEchoDuration)/(self.num_pulse) *
-                                        #                     len(t)/(pulse.ramp_time))
-                                        #half_pi_index = int((pulse.ramp_time - 2 *wait_time)/(self.num_pulse + 3) *
-                                        #                    len(t)/(pulse.ramp_time))
                                         phase_indices = self.location_index * half_pi_index
                                         phase_indices = phase_indices.astype('int')
                                         phase = self.phase_pattern
@@ -1177,17 +1168,7 @@ class SpectrumM4X6620Worker(Worker):
                                         c1 = chirp(t[:phase_indices[0]], f0=pulse.start, t1=real_ramp_time, f1=pulse.end, method='linear', phi=phase[0]) * on[0]
                                         c2 = chirp(t[phase_indices[0]:phase_indices[1]], f0=pulse.start, t1=real_ramp_time, f1=pulse.end, method='linear', phi=phase[1]) * on[1]
                                         c3 = chirp(t[phase_indices[1]:half_pi_index], f0=pulse.start, t1=real_ramp_time, f1=pulse.end, method='linear', phi=phase[2]) * on[2]
-                                        cs = chirp(t[half_pi_index:half_pi_index + pulse2_index], f0=pulse.start, t1=real_ramp_time, f1=pulse.end, method='linear', phi=phase[3]) * on[3]
-
-                                        # cs = chirp(t[half_pi_index:half_pi_index * self.num_pulse], f0=pulse.start, t1=real_ramp_time, f1=pulse.end, method='linear', phi=phase[3]) * on[3]
-                                        # # cs = np.array([chirp(t[half_pi_index * i:(i + 1) * half_pi_index],
-                                        #                        f0=pulse.start,
-                                        #                        t1=real_ramp_time,
-                                        #                        f1=pulse.end,
-                                        #                        method='linear',
-                                        #                        phi= 90) for i in range(1, self.num_pulse)]).flatten()
-                                        # cr is ramsey
-                                        # cr = chirp(t[self.num_pulse * half_pi_index:], f0=average_freq, t1=real_ramp_time, f1=average_freq, method='linear', phi=pulse.phase)
+                                        cs = chirp(t[half_pi_index:half_pi_index + pulse2_index], f0=pulse.start, t1=real_ramp_time, f1=pulse.end, method='linear', phi=phase[2])
                                         cr = chirp(t[half_pi_index + pulse2_index:], f0=average_freq, t1=real_ramp_time, f1=average_freq, method='linear', phi=pulse.phase)
                                         print c1.shape, c2.shape, c3.shape, cs.shape, cr.shape
                                         pulse_data += pulse.amp * (2**15-1) * np.concatenate([c1, c2, c3, cs, cr])
@@ -1197,7 +1178,24 @@ class SpectrumM4X6620Worker(Worker):
                             elif pulse.ramp_type == "quadratic":
                                 pulse_data += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.end, method='quadratic', phi=pulse.phase)
                             else: ## If no allowed ramp is specified, then it is assumed that the frequency remains stationary.
-                                pulse_data += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.start, method='linear', phi=pulse.phase)
+                                if wvf.port == 2: #probe adiabatic sweep
+                                    get_pulse_index = lambda x: int(x * len(t)/(pulse.ramp_time))
+                                    if self.PR_Cavity_Ramp:
+                                        pr_ramp_end_index = get_pulse_index(self.PR_RampDuration)
+                                        pr_amp_ramp = pulse.amp * (2**15-1) * np.linspace(0, 1, len(t[:pr_ramp_end_index]))
+                                        pr_amp_hold = pulse.amp * (2**15-1) * np.linspace(1, 1, len(t[pr_ramp_end_index:]))
+                                        pr_amp = np.concatenate([pr_amp_ramp, pr_amp_hold])
+                                        print("pulse.ramp_time: ", pulse.ramp_time)
+                                        print("pr_ramp_end_index: ", pr_ramp_end_index)
+                                        print("len(t): ", len(t))
+                                        print("len(t[pr_ramp_end_index:]): ", len(t[pr_ramp_end_index:]))
+                                        #print(float(pr_ramp_end_index)/len(t[pr_ramp_end_index:]))
+                                        print("Probe amp: ", pr_amp)
+                                        pulse_data += pr_amp * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.end, method='linear', phi=pulse.phase)
+                                    else:
+                                        pulse_data += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.start, method='linear', phi=pulse.phase)
+                                else:
+                                    pulse_data += pulse.amp * (2**15-1) * chirp(t, f0=pulse.start, t1=pulse.ramp_time, f1=pulse.start, method='linear', phi=pulse.phase)
 
                         pulse_data = pulse_data.astype(int16)
                         begin = (wvf.time - group.time) * samples_per_chunk * int(self.num_chs) + wvf.port
@@ -1325,6 +1323,20 @@ class SpectrumM4X6620Worker(Worker):
             self.SP_RamseyPulseDuration = globals.attrs['SP_RamseyPulseDuration']
             self.SP_RamseyPulsePhase = globals.attrs['SP_RamseyPulsePhase']
             self.SP_RamseyWaitTime = globals.attrs['SP_RamseyWaitTime']
+
+            self.SP_A_RamanStartFreq = globals.attrs['SP_A_RamanStartFreq']
+            self.SP_A_RamanStopFreq = globals.attrs['SP_A_RamanStopFreq']
+            self.SP_A_RamanSweepDuration = globals.attrs['SP_A_RamanSweepDuration']
+            self.SP_A_RamanHoldTime = globals.attrs['SP_A_RamanHoldTime']
+            self.SP_A_RamanRampOffDur = globals.attrs['SP_A_RamanRampOffDur']
+            self.SP_A_DoRamps = globals.attrs['SP_A_DoRamps']
+            self.SP_A_RamseyPulseTime = globals.attrs['SP_A_RamseyPulseTime']
+            self.SP_A_RamseyPulseFreq = globals.attrs['SP_A_RamseyPulseFreq']
+            self.SP_A_RamseyPulsePhase = globals.attrs['SP_A_RamseyPulsePhase']
+
+
+            self.PR_Cavity_Ramp = globals.attrs['PR_Cavity_Ramp']
+            self.PR_RampDuration = globals.attrs['PR_RampDuration']
 
             settings = device['device_settings']
             self.mode = settings['mode']
