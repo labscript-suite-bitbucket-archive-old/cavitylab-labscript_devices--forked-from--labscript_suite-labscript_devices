@@ -304,7 +304,7 @@ class NiPCIe6363Worker(Worker):
 
 class NiPCIe6363AcquisitionWorker(Worker):
     def init(self):
-        #exec 'import traceback' in globals()
+        exec('import traceback', globals())
         exec('from PyDAQmx import Task', globals())
         exec('from PyDAQmx.DAQmxConstants import *', globals())
         exec('from PyDAQmx.DAQmxTypes import *', globals())
@@ -870,7 +870,7 @@ class NiPCIe6363WaitMonitorWorker(Worker):
 class NiPCIe6363CounterAcquisitionWorker(Worker):
 #    exec 'from PyDAQmx import Task' in globals()
     def init(self):
-        #exec 'import traceback' in globals()
+        exec 'import traceback' in globals()
         exec 'from PyDAQmx import Task' in globals()
         exec 'from PyDAQmx.DAQmxConstants import *' in globals()
         exec 'from PyDAQmx.DAQmxTypes import *' in globals()
@@ -1203,4 +1203,3 @@ class NiPCIe6363CounterAcquisitionWorker(Worker):
 @runviewer_parser
 class RunviewerClass(parent.RunviewerClass):
     num_digitals = 32
-
