@@ -402,7 +402,7 @@ class SpectrumM4X6620(Device):
 
     # Load profile table containing data into h5 file, using the same hierarchical structure from above.
     def generate_code(self, hdf5_file):
-        print "Generating Code"
+        print("Generating Code")
         device = hdf5_file.create_group('/devices/' + self.name)
 
         # Store device settings
