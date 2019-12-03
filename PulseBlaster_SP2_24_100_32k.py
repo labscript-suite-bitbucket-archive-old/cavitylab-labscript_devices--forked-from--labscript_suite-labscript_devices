@@ -15,16 +15,17 @@ from labscript_utils import PY2
 if PY2:
     str = unicode
 
-from labscript_devices import labscript_device, BLACS_tab, BLACS_worker, runviewer_parser
+from labscript_devices import BLACS_tab, runviewer_parser
 from labscript_devices.PulseBlaster_No_DDS import PulseBlaster_No_DDS, Pulseblaster_No_DDS_Tab, PulseblasterNoDDSWorker
 from labscript_devices.PulseBlaster import PulseBlasterParser
 
-@labscript_device
+
 class PulseBlaster_SP2_24_100_32k(PulseBlaster_No_DDS):
     description = 'SpinCore PulseBlaster-SP2-24-100-32k'
     clock_limit = 5.0e6
     clock_resolution = 10e-9
     n_flags = 24
+    core_clock_freq = 100.0
     
     def __init__(self, *args, **kwargs):
         if 'max_instructions' not in kwargs:
@@ -40,7 +41,6 @@ class PulseBlaster_SP2_24_100_32k_Tab(Pulseblaster_No_DDS_Tab):
         Pulseblaster_No_DDS_Tab.__init__(self,*args,**kwargs)
     
     
-@BLACS_worker
 class PulseBlaster_SP2_24_100_32k_Worker(PulseblasterNoDDSWorker):
     core_clock_freq = 100.0
     
