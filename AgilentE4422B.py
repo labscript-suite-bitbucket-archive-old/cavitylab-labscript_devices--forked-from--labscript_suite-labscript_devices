@@ -258,7 +258,7 @@ class AgilentE4422BWorker(Worker):
         if(ser.isOpen() == False):
             ser.open()
 
-        ser.write(':SYST:COMM:GPIB:ADDR?\r\n')
+        ser.write(':SYST:COMM:GPIB:ADDR?\r\n'.encode())
         GPIBAddr = ser.readline()
         ser.close()
 
@@ -268,11 +268,11 @@ class AgilentE4422BWorker(Worker):
             raise LabscriptError("Expected device at GPIB address "+str(self.GPIBAddress)+" (actual address is "+str(int(GPIBAddr))+")")
 
         ser.open()
-        ser.write(':OUTP?\r\n')
+        ser.write(':OUTP?\r\n'.encode())
         output_state = ser.readline()
 
         if int(output_state) != 1:
-            ser.write(':OUTP ON\r\n')
+            ser.write(':OUTP ON\r\n'.encode())
 
         ser.close()
 
@@ -285,9 +285,9 @@ class AgilentE4422BWorker(Worker):
         if(ser.isOpen() == False):
             ser.open()
 
-        ser.write(':FREQ?\r\n')
+        ser.write(':FREQ?\r\n'.encode())
         freq = float(ser.readline()) / 1.0e6
-        ser.write(':POW?\r\n')
+        ser.write(':POW?\r\n'.encode())
         amp = float(ser.readline())
 
         results['channel 0']['freq'] = freq
@@ -307,7 +307,7 @@ class AgilentE4422BWorker(Worker):
 
         values = front_panel_values['channel 0']
 
-        ser.write(':POW '+str(values['amp'])+' dBm; :FREQ '+str(values['freq'])+' MHz\r\n')
+        ser.write((':POW '+str(values['amp'])+' dBm; :FREQ '+str(values['freq'])+' MHz\r\n').encode())
 
         ser.close()
 
@@ -369,7 +369,7 @@ class AgilentE4422BWorker(Worker):
         ser = serial.Serial(self.COMPort, baudrate=self.baudrate, timeout=1)
         if(ser.isOpen() == False):
             ser.open()
-        ser.write(serial_line)
+        ser.write(serial_line.encode())
         ser.close()
 
         return self.final_values
@@ -395,13 +395,10 @@ class AgilentE4422BWorker(Worker):
         ser = serial.Serial(self.COMPort, baudrate=self.baudrate, timeout=1)
         if(ser.isOpen() == False):
             ser.open()
-        ser.write(':POW '+str(values['amp'])+' dBm; :FREQ '+str(values['freq'])+' MHz\r\n')
+        ser.write((':POW '+str(values['amp'])+' dBm; :FREQ '+str(values['freq'])+' MHz\r\n').encode())
         ser.close()
 
         return True
 
     def shutdown(self):
         return
-
-
-

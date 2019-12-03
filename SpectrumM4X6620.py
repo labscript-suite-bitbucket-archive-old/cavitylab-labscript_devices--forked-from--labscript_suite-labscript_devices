@@ -291,13 +291,14 @@ def draw_sequence_plot(waveform_groups, sequence_instrs, clock_freq, ax):
 
 
 @labscript_device
-class SpectrumM4X6620(Device):
+class SpectrumM4X6620(IntermediateDevice):
 
     def __init__(self,name,parent_device,trigger,triggerDur=100e-6):
         self.BLACS_connection = 5
-        Device.__init__(self,name,parent_device,connection=self.BLACS_connection)
+        self.name = name
+        IntermediateDevice.__init__(self,name,parent_device)
         self.set_mode('Off') ## Initialize data structure
-
+        self.connection = self.BLACS_connection
         self.triggerDur = triggerDur
 
         self.raw_waveforms = []

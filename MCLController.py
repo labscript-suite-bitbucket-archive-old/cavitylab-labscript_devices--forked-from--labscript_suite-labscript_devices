@@ -39,7 +39,7 @@ class MCLController:
 
     def writeZPosition(self, position):
         if position > 250:
-            print "You cannot set the z value greater than 250 microns."
+            print("You cannot set the z value greater than 250 microns.")
             return
         #position = input("Where would you like to position the z axis (microns)?\n")
         zAxisWrite = self.mdll.MCL_SingleWriteZ(c_double(position), self.handle)
@@ -48,7 +48,7 @@ class MCLController:
 
     def writeAnglePosition(self, axis, position):
         if position > 5:
-            print "You cannot set the angle greater than 5 mradians."
+            print("You cannot set the angle greater than 5 mradians.")
             return
         angleAxisWrite = self.mdll.MCL_SingleWriteN(c_double(position),c_uint(axis), self.handle)
         #print "Axis {} write success? {}".format(axis, "Yes" if angleAxisWrite == 0 else "No, error code: {} ".format(angleAxisWrite))

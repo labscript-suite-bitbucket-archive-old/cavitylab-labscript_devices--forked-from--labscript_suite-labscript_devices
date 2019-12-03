@@ -185,7 +185,6 @@ class CameraTab(DeviceTab):
         return {'host': str(self.ui.host_lineEdit.text()), 'use_zmq': self.ui.use_zmq_checkBox.isChecked()}
 
     def restore_save_data(self, save_data):
-        print 'restore save data running'
         if save_data:
             host = save_data['host']
             self.ui.host_lineEdit.setText(host)
@@ -355,4 +354,3 @@ class CameraWorker(Worker):
 
     def shutdown(self):
         return
-
