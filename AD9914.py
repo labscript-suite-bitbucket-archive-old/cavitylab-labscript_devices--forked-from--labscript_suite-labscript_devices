@@ -486,9 +486,9 @@ class AD9914Worker(Worker):
             text_file.close()
         else:
             for r in range(0,28):
-                print 'Register ' + str(r) + ':\t' + binascii.hexlify(self.ReadRegister(r))
+                print('Register ' + str(r) + ':\t' + binascii.hexlify(self.ReadRegister(r)))
             for r in range(0,4):
-                print 'Port ' + str(r) + ':\t' + str(self.GetPortValue(r))
+                print('Port ' + str(r) + ':\t' + str(self.GetPortValue(r)))
 
     def check_remote_values(self):
 
