@@ -108,11 +108,11 @@ class CavityMirrorsWorker(Worker):
         self.outputStage.writeAnglePosition(2, MirrorParamObj.OutAngle2)
         self.inputStage.writeAnglePosition(1, MirrorParamObj.InAngle1)
         self.inputStage.writeAnglePosition(2, MirrorParamObj.InAngle2)
-        print "Z Pos:\t", MirrorParamObj.Length, "\t\tActual Z Pos:\t", self.outputStage.readZPosition()
-        print "Out V:\t", MirrorParamObj.OutAngle1, "\t\tActual Out V:\t", self.outputStage.readAnglePosition(1)
-        print "Out H:\t", MirrorParamObj.OutAngle2, "\t\tActual Out H:\t", self.outputStage.readAnglePosition(2)
-        print "In V:\t", MirrorParamObj.InAngle1, "\t\tActual In V:\t", self.inputStage.readAnglePosition(1)
-        print "In H:\t", MirrorParamObj.InAngle2, "\t\tActual In H:\t", self.inputStage.readAnglePosition(2)
+        print("Z Pos:\t", MirrorParamObj.Length, "\t\tActual Z Pos:\t", self.outputStage.readZPosition())
+        # print"Out V:\t", MirrorParamObj.OutAngle1, "\t\tActual Out V:\t", self.outputStage.readAnglePosition(1)
+        # print"Out H:\t", MirrorParamObj.OutAngle2, "\t\tActual Out H:\t", self.outputStage.readAnglePosition(2)
+        # print "In V:\t", MirrorParamObj.InAngle1, "\t\tActual In V:\t", self.inputStage.readAnglePosition(1)
+        # print "In H:\t", MirrorParamObj.InAngle2, "\t\tActual In H:\t", self.inputStage.readAnglePosition(2)
 
     def program_manual(self,front_panel_values):
         MirrorParamObj = MirrorParams(front_panel_values['In Vert'],front_panel_values['In Horiz'],front_panel_values['Out Vert'],front_panel_values['Out Horiz'],front_panel_values['Length'])

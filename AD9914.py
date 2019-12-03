@@ -190,13 +190,13 @@ class AD9914Worker(Worker):
 
         if (self.usePLL):
             # *** Use 244x PLL multiplier w/ 10MHz clock input
-            reg2 = bytearray("\x1C\x7A\x04\x00")
+            reg2 = bytearray(b"\x1C\x7A\x04\x00")
             self.WriteRegister(2, reg2)
 
         self.CAL()
 
-        reg0 = bytearray("\x08\x01\x01\x00")
-        reg1 = bytearray("\x00\x09\x80\x00")
+        reg0 = bytearray(b"\x08\x01\x01\x00")
+        reg1 = bytearray(b"\x00\x09\x80\x00")
         self.WriteRegister(0, reg0)
         self.WriteRegister(1, reg1)
 
