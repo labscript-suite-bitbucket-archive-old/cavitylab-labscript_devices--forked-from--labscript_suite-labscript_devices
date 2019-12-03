@@ -15,19 +15,39 @@ from labscript_utils import PY2
 if PY2:
     str = unicode
 
-from labscript_devices import labscript_device, BLACS_tab, BLACS_worker, runviewer_parser
-from labscript_utils.numpy_dtype_workaround import dtype_workaround
+from labscript_devices import BLACS_tab, runviewer_parser
 
-from labscript import Device, PseudoclockDevice, Pseudoclock, ClockLine, IntermediateDevice, DigitalQuantity, DigitalOut, DDS, config, LabscriptError, set_passed_properties
+from labscript import Device, PseudoclockDevice, Pseudoclock, ClockLine, IntermediateDevice, DigitalQuantity, DigitalOut, DDS, DDSQuantity, config, LabscriptError, set_passed_properties
 
 import numpy as np
 
 import labscript_utils.h5_lock, h5py
 
-class x(object):
-    pass
-
 import time
+
+class PulseBlasterDDS(DDSQuantity):
+    description = 'PulseBlasterDDS'
+    def __init__(self, *args, **kwargs):
+        if 'call_parents_add_device' in kwargs:
+            call_parents_add_device = kwargs['call_parents_add_device']
+        else:
+            call_parents_add_device = True
+
+        kwargs['call_parents_add_device'] = False
+        DDSQuantity.__init__(self, *args, **kwargs)
+
+        self.gate = DigitalQuantity(self.name + '_gate', self, 'gate')
+        self.phase_reset = DigitalQuantity(self.name + '_phase_reset', self, 'phase_reset')
+
+        if call_parents_add_device:
+            self.parent_device.add_device(self)
+
+    def hold_phase(self, t):
+        self.phase_reset.go_high(t)
+
+    def release_phase(self, t):
+        self.phase_reset.go_low(t)
+
 
 profiles = {}
 def profile(funct):
@@ -69,8 +89,8 @@ def stop_profile(name):
     profiles[name]['min'] = profiles[name]['min'] if profiles[name]['min'] is not None and profiles[name]['min'] < runtime else runtime
     profiles[name]['max'] = profiles[name]['max'] if profiles[name]['max'] > runtime else runtime
     profiles[name]['average_time_per_call'] = profiles[name]['total_time']/profiles[name]['num_calls']
-          
-@labscript_device          
+
+
 class PulseBlaster(PseudoclockDevice):
     
     pb_instructions = {'CONTINUE':   0,
@@ -87,6 +107,7 @@ class PulseBlaster(PseudoclockDevice):
     # TODO: Add n_dds and generalise code
     n_flags = 12
     
+    core_clock_freq = 75 # MHz
     # This value is coupled to a value in the PulseBlaster worker process of BLACS
     # This number was found experimentally but is determined theoretically by the
     # instruction lengths in BLACS, and a finite delay in the PulseBlaster
@@ -106,7 +127,7 @@ class PulseBlaster(PseudoclockDevice):
                                                 "time_based_stop_workaround_extra_time"]}
         )
     def __init__(self, name, trigger_device=None, trigger_connection=None, board_number=0, firmware = '',
-                 programming_scheme='pb_start/BRANCH', pulse_width=None, max_instructions=4000,
+                 programming_scheme='pb_start/BRANCH', pulse_width='symmetric', max_instructions=4000,
                  time_based_stop_workaround=False, time_based_stop_workaround_extra_time=0.5, **kwargs):
         PseudoclockDevice.__init__(self, name, trigger_device, trigger_connection, **kwargs)
         self.BLACS_connection = board_number
@@ -151,7 +172,29 @@ class PulseBlaster(PseudoclockDevice):
             raise LabscriptError('only the master pseudoclock can use a programming scheme other than \'pb_start/BRANCH\'')
         self.programming_scheme = programming_scheme
 
-        if pulse_width is not None:            
+        # This is the minimum duration of a pulseblaster instruction. We save this now
+        # because clock_limit will be modified to reflect child device limitations and
+        # other things, but this remains the minimum instruction delay regardless of all
+        # that.
+        self.min_delay = 0.5 / self.clock_limit
+
+        # For pulseblaster instructions lasting longer than the below duration, we will
+        # instead use some multiple of the below, and then a regular instruction for the
+        # remainder. The max instruction length of a pulseblaster is actually 2**32
+        # clock cycles, but we subtract the minimum delay so that if the remainder is
+        # less than the minimum instruction length, we can add self.long_delay to it (and
+        # reduce the number of repetitions of the long delay by one), to keep it above
+        # the minimum delay without exceeding the true maximum delay.
+        self.long_delay = 2**32 / (self.core_clock_freq * 1e6) - self.min_delay
+
+        if pulse_width == 'minimum':
+            pulse_width = 0.5/self.clock_limit # the shortest possible
+        elif pulse_width != 'symmetric':
+            if not isinstance(pulse_width, (float, int, np.integer)):
+                msg = ("pulse_width must be 'symmetric', 'minimum', or a number " +
+                       "specifying a fixed pulse width to be used for clocking signals")
+                raise ValueError(msg)
+
             if pulse_width < 0.5/self.clock_limit:
                 message = ('pulse_width cannot be less than 0.5/%s.clock_limit '%self.__class__.__name__ +
                            '( = %s seconds)'%str(0.5/self.clock_limit))
@@ -160,16 +203,13 @@ class PulseBlaster(PseudoclockDevice):
             quantised_pulse_width = 2*pulse_width/self.clock_resolution
             quantised_pulse_width = int(quantised_pulse_width) + 1 # ceil(quantised_pulse_width)
             # This will be used as the high time of clock ticks:
-            self.pulse_width = quantised_pulse_width*self.clock_resolution/2
+            pulse_width = quantised_pulse_width*self.clock_resolution/2
             # This pulse width, if larger than the minimum, may limit how fast we can tick.
             # Update self.clock_limit accordingly.
             minimum_low_time = 0.5/self.clock_limit
-            if self.pulse_width > minimum_low_time:
-                self.clock_limit = 1/(self.pulse_width + minimum_low_time)
-        else:
-            pulse_width = 'symmetric'
-            self.pulse_width = None
-
+            if pulse_width > minimum_low_time:
+                self.clock_limit = 1/(pulse_width + minimum_low_time)
+        self.pulse_width = pulse_width
         self.max_instructions = max_instructions
 
         # Create the internal pseudoclock
@@ -196,7 +236,7 @@ class PulseBlaster(PseudoclockDevice):
             raise LabscriptError('The %s %s automatically creates a Pseudoclock because it only supports one. '%(self.description, self.name) +
                                  'Instead of instantiating your own Pseudoclock object, please use the internal' +
                                  ' one stored in %s.pseudoclock'%self.name)
-        elif isinstance(device, DDS) or isinstance(device, DigitalOut):
+        elif isinstance(device, DDS) or isinstance(device, PulseBlasterDDS) or isinstance(device, DigitalOut):
             #TODO: Defensive programming: device.name may not exist!
             raise LabscriptError('You have connected %s directly to %s, which is not allowed. You should instead specify the parent_device of %s as %s.direct_outputs'%(device.name, self.name, device.name, self.name))
         else:
@@ -226,7 +266,7 @@ class PulseBlaster(PseudoclockDevice):
         dds_outputs = []
         for output in self.direct_outputs.get_all_outputs():
             # If we are a child of a DDS
-            if isinstance(output.parent_device, DDS):
+            if isinstance(output.parent_device, DDS) or isinstance(output.parent_device, PulseBlasterDDS):
                 # and that DDS has not been processed yet
                 if output.parent_device not in dds_outputs:
                     # process the DDS instead of the child
@@ -236,7 +276,7 @@ class PulseBlaster(PseudoclockDevice):
                     continue
             
             # only check DDS and DigitalOuts (so ignore the children of the DDS)
-            if isinstance(output,DDS) or isinstance(output, DigitalOut):
+            if isinstance(output,DDS) or isinstance(output,PulseBlasterDDS) or isinstance(output, DigitalOut):
                 # get connection number and prefix
                 try:
                     prefix, connection = output.connection.split()
@@ -264,9 +304,9 @@ class PulseBlaster(PseudoclockDevice):
                 
                 # store a reference to the output
                 if isinstance(output, DigitalOut):
-                	dig_outputs.append(output)
-                elif isinstance(output, DDS):
-                	dds_outputs.append(output)
+                    dig_outputs.append(output)
+                elif isinstance(output, DDS) or isinstance(output, PulseBlasterDDS):
+                    dds_outputs.append(output)
                 
         return dig_outputs, dds_outputs
 
@@ -358,11 +398,12 @@ class PulseBlaster(PseudoclockDevice):
         ampregs = [0]*2
         phaseregs = [0]*2
         dds_enables = [0]*2
-            
-        pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables,
+        phase_resets = [0]*2
+        
+        pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables, 'phase_resets': phase_resets,
                         'flags': ''.join([str(flag) for flag in flags]), 'instruction': 'STOP',
                         'data': 0, 'delay': 10.0/self.clock_limit*1e9})
-        pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables,
+        pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables, 'phase_resets': phase_resets,
                         'flags': ''.join([str(flag) for flag in flags]), 'instruction': 'STOP',
                         'data': 0, 'delay': 10.0/self.clock_limit*1e9})    
         j += 2
@@ -388,6 +429,7 @@ class PulseBlaster(PseudoclockDevice):
             ampregs = [1]*2
             phaseregs = [1]*2
             dds_enables = [0]*2
+            phase_resets = [0]*2
             
             # This flag indicates whether we need a full clock tick, or are just updating an internal output
             only_internal = True
@@ -401,10 +443,6 @@ class PulseBlaster(PseudoclockDevice):
                     flags[flag_index] = 1
                     # We are not just using the internal clock line
                     only_internal = False
-                    
-            if only_internal and self.pulse_width is not None:
-                raise LabscriptError('You cannot set a pulse_width for %s (%s) if it is not used as a pseudoclock for another device'%(self.name, self.description))
-                    
             
             for output in dig_outputs:
                 flagindex = int(output.connection.split()[1])
@@ -415,19 +453,8 @@ class PulseBlaster(PseudoclockDevice):
                 ampregs[ddsnumber] = amps[ddsnumber][output.amplitude.raw_output[i]]
                 phaseregs[ddsnumber] = phases[ddsnumber][output.phase.raw_output[i]]
                 dds_enables[ddsnumber] = output.gate.raw_output[i]
-                
-            # if self.fast_clock_flag is not None:
-                # for fast_flag in self.fast_clock_flag:
-                    # if (type(instruction['fast_clock']) == list and 'flag %d'%fast_flag in instruction['fast_clock']) or instruction['fast_clock'] == 'all':
-                        # flags[fast_flag] = 1
-                    # else:
-                        # flags[fast_flag] = 1 if instruction['slow_clock_tick'] else 0
-            # if self.slow_clock_flag is not None:
-                # for slow_flag in self.slow_clock_flag:
-                    # flags[slow_flag] = 1 if instruction['slow_clock_tick'] else 0
-                    
-            # if instruction['slow_clock_tick']:
-                # slow_clock_indices.append(j)
+                if isinstance(output, PulseBlasterDDS):
+                    phase_resets[ddsnumber] = output.phase_reset.raw_output[i]
                 
             flagstring = ''.join([str(flag) for flag in flags])
             
@@ -438,33 +465,36 @@ class PulseBlaster(PseudoclockDevice):
                                      'please file a feature request at' +
                                      'http://redmine.physics.monash.edu.au/projects/labscript.')
                 
-            # Instruction delays > 55 secs will require a LONG_DELAY
-            # to be inserted. How many times does the delay of the
-            # loop/endloop instructions go into 55 secs?
             if not only_internal:
-                if self.pulse_width is not None:
-                    quotient, remainder = divmod(instruction['step'],55.0)
+                if self.pulse_width == 'symmetric':
+                    high_time = instruction['step']/2
                 else:
-                    quotient, remainder = divmod(instruction['step']/2.0,55.0)
-            else:
-                quotient, remainder = divmod(instruction['step'],55.0)
-                
-            if quotient and remainder < 100e-9:
-                # The remainder will be used for the total duration of the LOOP and END_LOOP instructions. 
-                # It must not be too short for this, if it is, take one LONG_DELAY iteration and give 
-                # its duration to the loop instructions:
-                quotient, remainder = quotient - 1, remainder + 55.0
-                
-            if not only_internal:
-                if self.pulse_width is not None:
-                    delay = self.pulse_width
-                else:
-                    delay = remainder
-            
-                # The loop and endloop instructions will only use the remainder:
-                pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables,
+                    high_time = self.pulse_width
+                # High time cannot be longer than self.long_delay (~57 seconds for a
+                # 75MHz core clock freq). If it is, clip it to self.long_delay. In this
+                # case we are not honouring the requested symmetric or fixed pulse
+                # width. To do so would be possible, but would consume more pulseblaster
+                # instructions, so we err on the side of fewer instructions:
+                high_time = min(high_time, self.long_delay)
+
+                # Low time is whatever is left:
+                low_time = instruction['step'] - high_time
+
+                # Do we need to insert a LONG_DELAY instruction to create a delay this
+                # long?
+                n_long_delays, remaining_low_time =  divmod(low_time, self.long_delay)
+
+                # If the remainder is too short to be output, add self.long_delay to it.
+                # self.long_delay was constructed such that adding self.min_delay to it
+                # is still not too long for a single instruction:
+                if n_long_delays and remaining_low_time < self.min_delay:
+                    n_long_delays -= 1
+                    remaining_low_time += self.long_delay
+
+                # The start loop instruction, Clock edges are high:
+                pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables, 'phase_resets':phase_resets,
                                 'flags': flagstring, 'instruction': 'LOOP',
-                                'data': instruction['reps'], 'delay': delay*1e9})
+                                'data': instruction['reps'], 'delay': high_time*1e9})
                 
                 for clock_line in instruction['enabled_clocks']:
                     if clock_line != self._direct_output_clock_line:
@@ -473,44 +503,44 @@ class PulseBlaster(PseudoclockDevice):
                         
                 flagstring = ''.join([str(flag) for flag in flags])
             
-                # If there was a nonzero quotient, let's wait twice that
-                # many multiples of 55 seconds (one multiple of 55 seconds
-                # for each of the other two loop and endloop instructions):
-                if quotient:
-                    if self.pulse_width is not None:
-                        delay = 55/2.0
-                    else:
-                        delay = 55
-                    
-                    pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables,
+                # The long delay instruction, if any. Clock edges are low: 
+                if n_long_delays:
+                    pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables, 'phase_resets':phase_resets,
                                 'flags': flagstring, 'instruction': 'LONG_DELAY',
-                                'data': int(2*quotient), 'delay': delay*1e9}) 
+                                'data': int(n_long_delays), 'delay': self.long_delay*1e9})
                                 
-                if self.pulse_width is not None:
-                    delay = 2*remainder-self.pulse_width
-                else:
-                    delay = remainder
-                pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables,
+                # Remaining low time. Clock edges are low:
+                pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables, 'phase_resets':phase_resets,
                                 'flags': flagstring, 'instruction': 'END_LOOP',
-                                'data': j, 'delay': delay*1e9})
+                                'data': j, 'delay': remaining_low_time*1e9})
                                 
                 # Two instructions were used in the case of there being no LONG_DELAY, 
                 # otherwise three. This increment is done here so that the j referred
                 # to in the previous line still refers to the LOOP instruction.
-                j += 3 if quotient else 2
+                j += 3 if n_long_delays else 2
             else:
-                # We only need to update a direct output, so no need to tick the clocks
+                # We only need to update a direct output, so no need to tick the clocks.
+
+                # Do we need to insert a LONG_DELAY instruction to create a delay this
+                # long?
+                n_long_delays, remaining_delay =  divmod(instruction['step'], self.long_delay)
+                # If the remainder is too short to be output, add self.long_delay to it.
+                # self.long_delay was constructed such that adding self.min_delay to it
+                # is still not too long for a single instruction:
+                if n_long_delays and remaining_delay < self.min_delay:
+                    n_long_delays -= 1
+                    remaining_delay += self.long_delay
                 
-                # The loop and endloop instructions will only use the remainder:
-                pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables,
-                                'flags': flagstring, 'instruction': 'CONTINUE',
-                                'data': 0, 'delay': remainder*1e9})
-                # If there was a nonzero quotient, let's wait that many multiples of 55 seconds:
-                if quotient:
-                    pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables,
+                if n_long_delays:
+                    pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables, 'phase_resets':phase_resets,
                                 'flags': flagstring, 'instruction': 'LONG_DELAY',
-                                'data': int(2*quotient), 'delay': 55/2.0*1e9}) 
-                j += 2 if quotient else 1
+                                'data': int(n_long_delays), 'delay': self.long_delay*1e9})
+
+                pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables, 'phase_resets':phase_resets,
+                                'flags': flagstring, 'instruction': 'CONTINUE',
+                                'data': 0, 'delay': remaining_delay*1e9})
+                
+                j += 2 if n_long_delays else 1
                 
 
         if self.programming_scheme == 'pb_start/BRANCH':
@@ -519,7 +549,7 @@ class PulseBlaster(PseudoclockDevice):
             # the same values and a WAIT instruction. The PulseBlaster then
             # waits on instuction zero, which is a state ready for either
             # further static updates or buffered mode.
-            pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables,
+            pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables, 'phase_resets':phase_resets,
                             'flags': flagstring, 'instruction': 'BRANCH',
                             'data': 0, 'delay': 10.0/self.clock_limit*1e9})
         elif self.programming_scheme == 'pb_stop_programming/STOP':
@@ -529,7 +559,7 @@ class PulseBlaster(PseudoclockDevice):
             # repeated triggers coming to it, such as a 50Hz/60Hz line trigger. We can't have it sit
             # on a WAIT instruction as above, or it will trigger and run repeatedly when that's not what
             # we wanted.
-            pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables,
+            pb_inst.append({'freqs': freqregs, 'amps': ampregs, 'phases': phaseregs, 'enables':dds_enables, 'phase_resets':phase_resets,
                             'flags': flagstring, 'instruction': 'STOP',
                             'data': 0, 'delay': 10.0/self.clock_limit*1e9})
         else:
@@ -548,7 +578,7 @@ class PulseBlaster(PseudoclockDevice):
                     ('dds_en1', np.int32), ('phase_reset1', np.int32),
                     ('flags', np.int32), ('inst', np.int32),
                     ('inst_data', np.int32), ('length', np.float64)]
-        pb_inst_table = np.empty(len(pb_inst),dtype = dtype_workaround(pb_dtype))
+        pb_inst_table = np.empty(len(pb_inst),dtype = pb_dtype)
         for i,inst in enumerate(pb_inst):
             flagint = int(inst['flags'][::-1],2)
             instructionint = self.pb_instructions[inst['instruction']]
@@ -562,7 +592,10 @@ class PulseBlaster(PseudoclockDevice):
             amp1 = inst['amps'][1]
             en0 = inst['enables'][0]
             en1 = inst['enables'][1]
-            pb_inst_table[i] = (freq0,phase0,amp0,en0,0,freq1,phase1,amp1,en1,0, flagint, 
+            phase_reset0 = inst['phase_resets'][0]
+            phase_reset1 = inst['phase_resets'][1]
+            
+            pb_inst_table[i] = (freq0,phase0,amp0,en0,phase_reset0,freq1,phase1,amp1,en1,phase_reset1, flagint, 
                                 instructionint, dataint, delaydouble)     
                                 
         # Okay now write it to the file: 
@@ -581,8 +614,10 @@ class PulseBlaster(PseudoclockDevice):
         self.write_pb_inst_to_h5(pb_inst, hdf5_file)
         
 
+
+
 class PulseBlasterDirectOutputs(IntermediateDevice):
-    allowed_children = [DDS, DigitalOut]
+    allowed_children = [DDS, PulseBlasterDDS, DigitalOut]
     clock_limit = PulseBlaster.clock_limit
     description = 'PB-DDSII-300 Direct Outputs'
   
@@ -597,7 +632,7 @@ class PulseBlasterDirectOutputs(IntermediateDevice):
                 raise LabscriptError('You cannot specify a digital gate ' +
                                      'for a DDS connected to %s. '% (self.name) + 
                                      'The digital gate is always internal to the Pulseblaster.')
-            
+
 
 from blacs.tab_base_classes import Worker, define_state
 from blacs.tab_base_classes import MODE_MANUAL, MODE_TRANSITION_TO_BUFFERED, MODE_TRANSITION_TO_MANUAL, MODE_BUFFERED  
@@ -789,7 +824,6 @@ class PulseBlasterTab(DeviceTab):
         self.statemachine_timeout_add(100,self.status_monitor,notify_queue)
 
 
-@BLACS_worker        
 class PulseblasterWorker(Worker):
     def init(self):
         from labscript_utils import check_version
@@ -819,8 +853,10 @@ class PulseblasterWorker(Worker):
         pb_core_clock(75)
         
         # This is only set to True on a per-shot basis, so set it to False
-        # for manual mode
+        # for manual mode. Set associated attributes to None:
         self.time_based_stop_workaround = False
+        self.time_based_shot_duration = None
+        self.time_based_shot_end_time = None
 
     def program_manual(self,values):
     
@@ -959,9 +995,7 @@ class PulseblasterWorker(Worker):
             
                 self.smart_cache['ready_to_go'] = True
                 self.smart_cache['initial_values'] = initial_values
-                # Line zero is a wait on the final state of the program:
-                pb_inst_dds2(freqreg0,phasereg0,ampreg0,en0,0,freqreg1,phasereg1,ampreg1,en1,0,flags,WAIT,0,100)
-                
+
                 # create initial flags string
                 # NOTE: The spinapi can take a string or integer for flags.
                 # If it is a string: 
@@ -979,6 +1013,14 @@ class PulseblasterWorker(Worker):
                         initial_flags += '1'
                     else:
                         initial_flags += '0'
+
+                if self.programming_scheme == 'pb_start/BRANCH':
+                    # Line zero is a wait on the final state of the program in 'pb_start/BRANCH' mode 
+                    pb_inst_dds2(freqreg0,phasereg0,ampreg0,en0,0,freqreg1,phasereg1,ampreg1,en1,0,flags,WAIT,0,100)
+                else:
+                    # Line zero otherwise just contains the initial state 
+                    pb_inst_dds2(0,0,0,initial_values['dds 0']['gate'],0,0,0,0,initial_values['dds 1']['gate'],0,initial_flags, CONTINUE, 0, 100)
+
                 # Line one is a continue with the current front panel values:
                 pb_inst_dds2(0,0,0,initial_values['dds 0']['gate'],0,0,0,0,initial_values['dds 1']['gate'],0,initial_flags, CONTINUE, 0, 100)
                 # Now the rest of the program:
@@ -1022,7 +1064,7 @@ class PulseblasterWorker(Worker):
                 self.waits_pending = False
             except zprocess.TimeoutError:
                 pass
-        if self.time_based_stop_workaround:
+        if self.time_based_shot_end_time is not None:
             import time
             time_based_shot_over = time.time() > self.time_based_shot_end_time
         else:
@@ -1041,8 +1083,10 @@ class PulseblasterWorker(Worker):
             done_condition = time_based_shot_over
             
         # This is only set to True on a per-shot basis, so reset it to False
-        # for manual mode
+        # for manual mode. Reset associated attributes to None:
         self.time_based_stop_workaround = False
+        self.time_based_shot_duration = None
+        self.time_based_shot_end_time = None
         
         if done_condition and not waits_pending:
             return True
