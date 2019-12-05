@@ -82,7 +82,6 @@ class Camera(TriggerableDevice):
         else:
             raise LabscriptError('Camera parameter %s does not exist in dictionary'%param)
 
-
     def expose(self, name, t , frametype, exposure_time=None):
         if exposure_time is None:
             duration = self.exposure_time
@@ -143,7 +142,12 @@ class Camera(TriggerableDevice):
         # DEPRECATED backward campatibility for use of exposuretime keyword argument instead of exposure_time:
         self.set_property('exposure_time', self.exposure_time, location='device_properties', overwrite=True)
 
-
+        if len(self.other_params) > 0:
+            for key in self.other_params:
+                if isinstance(self.other_params[key], Camera.Param):
+                    group.attrs[key] = self.other_params[key].name
+                else:
+                    group.attrs[key] = self.other_params[key]
 
 import os
 
@@ -263,7 +267,7 @@ class CameraWorker(Worker):
             raise Exception('invalid response from server: ' + response)
 
     def transition_to_buffered(self, device_name, h5file, initial_values, fresh):
-        h5file = shared_drive.path_to_agnostic(h5file)
+        h5file = shared_drive.path_to_local(h5file)
         if not self.use_zmq:
             return self.transition_to_buffered_sockets(h5file,self.host, self.port)
         response = zprocess.zmq_get_string(self.port, self.host, data=h5file)

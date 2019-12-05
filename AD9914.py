@@ -237,10 +237,11 @@ class AD9914Worker(Worker):
             reg00=self.ReadRegister(0x00)
             reg00[3] &= 0xFE
             self.WriteRegister(0x00,reg00,True)
-            time.sleep(0.1)
+            time.sleep(0.2)
             reg00[3] |= 0x01
             self.WriteRegister(0x00,reg00,True)
-            time.sleep(0.4)
+            self.WriteRegister(0x00,reg00,True)
+            time.sleep(0.5)
 
             reg1b=self.ReadRegister(0x1B)
             if (reg1b[3] & 0x01) == 0:
@@ -340,7 +341,7 @@ class AD9914Worker(Worker):
 
     def CalcFTW (self, fout):   # fout in MHz
         fout = fout * 1e6   # convert from MHz to Hz
-        FTWint = round(2**32 * (fout / self.clk))
+        FTWint = int(round(2**32 * (fout / self.clk)))
 
 #        print fout
 #        print FTWint
@@ -361,7 +362,7 @@ class AD9914Worker(Worker):
     def CalcPOW (self, dp):     # dp in degrees
         dp %= 360   # Make sure dp is always in [0,360)
 
-        POWint = round(2**16 * (dp / 360))
+        POWint = int(round(2**16 * (dp / 360)))
 
         if POWint >= 2**16:
             raise LabscriptError("Phase "+str(dp)+" is too high.")
@@ -381,7 +382,7 @@ class AD9914Worker(Worker):
         if ampl == 1.0:
             ASFint = 2**12 - 1
         else:
-            ASFint = round(2**12 * ampl)
+            ASFint = int(round(2**12 * ampl))
 
         if ASFint >= 2**12:
             raise LabscriptError("Amplitude "+str(ampl)+" is too high.")
@@ -465,7 +466,7 @@ class AD9914Worker(Worker):
 
         # Set the slope time interval (constant: 2e-6 s)
         dt_reg = bytearray(4)
-        dt_word = round(dt * self.clk / 24)
+        dt_word = int(round(dt * self.clk / 24))
         if dt_word >= 2**16:
             raise LabscriptError("Sweep time interval dt is too long.")
 
