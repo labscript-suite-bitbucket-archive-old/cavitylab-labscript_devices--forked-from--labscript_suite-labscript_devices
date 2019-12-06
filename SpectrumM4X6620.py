@@ -1108,6 +1108,7 @@ class SpectrumM4X6620Worker(Worker):
                         left = 29
                         today_date = date.today()
                         for pulse in wvf.pulses:
+                            pulse.ramp_type = pulse.ramp_type.decode("utf-8")
                             if pulse.ramp_type in ["linear", "quadratic"]:
                                 get_pulse_index = lambda x: int(x * len(t)/(pulse.ramp_time))
                                 # if wvf.port == 0 and pulse.keyword=="adiabatic": #Microwaves
