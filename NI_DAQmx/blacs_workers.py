@@ -29,7 +29,6 @@ from PyDAQmx import *
 from PyDAQmx.DAQmxConstants import *
 from PyDAQmx.DAQmxTypes import *
 from PyDAQmx.DAQmxCallBack import *
-
 import numpy as np
 from numpy.lib.recfunctions import structured_to_unstructured
 import labscript_utils.h5_lock
